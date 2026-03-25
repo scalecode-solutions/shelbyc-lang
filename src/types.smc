@@ -1,0 +1,402 @@
+// ShelbyC Self-Hosted Compiler — Shared Types
+// All enums, structs, essential externs, helper functions, and error reporting.
+// This file is loaded first via shelbyc.mod.
+
+link "LLVM-22"
+
+// ---- C stdlib externs (needed everywhere) ----
+extern fn malloc(size usize) *u8;
+extern fn calloc(count usize, size usize) *u8;
+extern fn realloc(ptr *u8, size usize) *u8;
+extern fn free(ptr *u8);
+extern fn memcpy(dst *u8, src *u8, n usize) *u8;
+extern fn memset(dst *u8, val i32, n usize) *u8;
+extern fn strlen(s *u8) usize;
+extern fn strcmp(a *u8, b *u8) i32;
+
+// ---- Error reporting externs ----
+extern fn fdopen(fd i32, mode *u8) *u8;
+extern fn fprintf(stream *u8, fmt *u8, ...) i32;
+extern fn snprintf(buf *u8, size usize, fmt *u8, ...) i32;
+
+// ==================================================================
+// Token types
+// ==================================================================
+
+enum TokenKind {
+    Eof; Error;
+    IntLit; FloatLit; CharLit; StrLit; StrBegin; StrMid; StrEnd;
+    RawStrLit; MultilineStr; True; False; None;
+    Ident;                                                          // 14
+    KwArena; KwAsync; KwAwait; KwBool; KwBreak; KwByte;             // 15-20
+    KwChan; KwChar; KwClone; KwComptime; KwConst; KwContinue;       // 21-26
+    KwDefer; KwElse; KwEnum; KwErr; KwExtern;                       // 27-31
+    KwF32; KwF64; KwFlow; KwFn; KwFor; KwFrom; KwWake; KwGuard;     // 32-39
+    KwI8; KwI16; KwI32; KwI64;                                      // 40-43
+    KwIf; KwImport; KwIn; KwInterface; KwIsize;                     // 44-48
+    KwLoop; KwMatch; KwMove; KwMut; KwNew; KwNewtype;               // 49-54
+    KwOk; KwReturn; KwSelect; KwSelf; KwSome;                       // 55-59
+    KwStruct; KwType;                                                // 60-61
+    KwU8; KwU16; KwU32; KwU64;                                      // 62-65
+    KwUnion; KwUsize; KwTrit; KwTryte; KwVoid; KwWhile; KwYield;    // 66-72
+    Plus; Minus; Star; Slash; Percent;                               // 73-77
+    EqEq; BangEq; Lt; Gt; LtEq; GtEq;                              // 78-83
+    AmpAmp; PipePipe; Bang;                                          // 84-86
+    Amp; Pipe; Caret; Tilde; LtLt; GtGt;                            // 87-92
+    Eq; PlusEq; MinusEq; StarEq; SlashEq; PercentEq;               // 93-98
+    AmpEq; PipeEq; CaretEq; LtLtEq; GtGtEq;                       // 99-103
+    PipeGt; Question; QuestionDot; QuestionQuestion;                 // 104-107
+    DotDot; DotDotEq; Ellipsis; FatArrow; ColonEq; LtMinus;        // 108-113
+    PlusPlus; MinusMinus; StarStar; Spaceship;                       // 114-117
+    LParen; RParen; LBrace; RBrace; LBracket; RBracket;             // 118-123
+    Semicolon; Colon; Comma; Dot; At; Hash;                          // 124-129
+}
+
+struct Token {
+    kind TokenKind;
+    line u32;
+    col  u32;
+    start i32;
+    tlen  i32;
+}
+
+// ==================================================================
+// Lexer types
+// ==================================================================
+
+struct Lexer {
+    src  str;
+    pos  i32;
+    slen i32;
+    line u32;
+    col  u32;
+    interp_depth i32;
+    bd0 i32; bd1 i32; bd2 i32; bd3 i32;
+    bd4 i32; bd5 i32; bd6 i32; bd7 i32;
+}
+
+// ==================================================================
+// AST Node types
+// ==================================================================
+
+enum NodeKind {
+    // Tags 0-35: original (DO NOT REORDER — hardcoded tag values throughout)
+    File; FnDecl; Block; VarDecl; Return; ExprStmt;         // 0-5
+    Call; FieldAccess; IdentNode; IntLit; FloatLit; StrLit;  // 6-11
+    Binary; Unary; Assign; If; While; For;                   // 12-17
+    Param; StructDecl; EnumDecl; Field; Variant;             // 18-22
+    BoolLit; NoneLit;                                        // 23-24
+    Match; MatchArm; Defer; Break; Continue;                 // 25-29
+    Import; ExternFn; Closure; Index; Send; Recv;            // 30-35
+    // Tags 36+
+    Link;               // 36
+    UnionDecl;          // 37
+    InterfaceDecl;      // 38
+    TypeAlias;          // 39
+    NewtypeDecl;        // 40
+    ConstDecl;          // 41
+    MethodSig;          // 42
+    Receiver;           // 43
+    TupleDecl;          // 44
+    Wake;               // 45
+    Guard;              // 46
+    Loop;               // 47
+    Select; SelectArm;  // 48-49
+    OptionalChain;      // 50
+    Pipeline;           // 51
+    Coalesce;           // 52
+    Propagate;          // 53
+    Range;              // 54
+    Cast;               // 55
+    IncDec;             // 56
+    Move;               // 57
+    Some; Ok; Err;      // 58-60
+    Group;              // 61
+    StructLit;          // 62
+    ArrayLit;           // 63
+    TupleLit;           // 64
+    Slice;              // 65
+    StrInterp;          // 66
+    CharLit;            // 67
+    TritLit;            // 68
+    MultilineStrNode;   // 69
+    RawStrNode;         // 70
+    FormatExpr;         // 71
+    // Type nodes
+    TypeName;           // 72
+    TypeRef;            // 73
+    TypePtr;            // 74
+    TypeArray;          // 75
+    TypeSlice;          // 76
+    TypeFn;             // 77
+    TypeGeneric;        // 78
+    TypeVoid;           // 79
+    TypeTuple;          // 80
+    TypeStruct;         // 81
+    // Pattern nodes
+    PatIdent;           // 82
+    PatWildcard;        // 83
+    PatLiteral;         // 84
+    PatEnum;            // 85
+    PatRange;           // 86
+    PatOr;              // 87
+    PatBind;            // 88
+    // Misc
+    Attr;               // 89
+    Capture;            // 90
+}
+
+struct Node {
+    kind  NodeKind;
+    start i32;       // source position
+    nlen  i32;       // token length
+    line  u32;
+    name_start i32;
+    name_len   i32;
+    c0 i64; c1 i64; c2 i64; c3 i64;
+    ival i64;
+    op   i32;
+}
+
+fn MkNode(kind NodeKind, start i32, nlen i32, line i64) Node {
+    return Node{
+        kind: kind, start: start, nlen: nlen, line: line,
+        name_start: 0, name_len: 0,
+        c0: -1, c1: -1, c2: -1, c3: -1,
+        ival: 0, op: 0,
+    };
+}
+
+// ==================================================================
+// Parser types
+// ==================================================================
+
+struct Parser {
+    src      str;
+    tokens   Vec<i32>;
+    tstarts  Vec<i32>;
+    tlens    Vec<i32>;
+    tlines   Vec<u32>;
+    children Vec<i64>;
+    tcols    Vec<u32>;
+    pos      i32;
+    nodes    Vec<Node>;
+    errors   i32;
+}
+
+// ==================================================================
+// Checker types
+// ==================================================================
+
+enum TypeKind {
+    // Primitives (0-17)
+    TyVoid; TyBool; TyChar;
+    TyI8; TyI16; TyI32; TyI64;
+    TyU8; TyU16; TyU32; TyU64;
+    TyF32; TyF64; TyUsize; TyIsize;
+    TyTrit; TyTryte; TyStr;
+    // Compound (18-24)
+    TyRef; TyPtr; TyArray; TySlice; TyFn; TyStruct; TyEnum;
+    // Special (25-34)
+    TyUnion; TyAlias; TyOption; TyResult; TyChan;
+    TyInferred; TyNever; TyError; TyTypeParam; TyInterface;
+    // Collections (35-39)
+    TyVec; TyBox; TyMap; TySet; TyIter;
+    // Sync/concurrency (40-49)
+    TyMutex; TyRwLock; TyAtomic; TyOnce; TyBarrier;
+    TyTaskScope; TyWaitGroup; TyBroadcast; TyBroadcastSub; TyFuture;
+    // Other (50-55)
+    TyAllocator; TyNewtype; TyTuple; TyStrbuf; TyUntypedInt; TyUntypedFloat;
+}
+
+struct SCType {
+    kind TypeKind;
+    name_start i32;
+    name_len   i32;
+    inner i32;           // inner type (Ref, Ptr, Vec, Option, etc.)
+    param_count i32;     // fn param count, struct field count, etc.
+    ret_type i32;        // fn return type, map val type, result err type
+    children_start i64;  // index into Checker.type_children
+    array_size i64;
+    is_mut i32;
+    node_idx i64;        // back-pointer to AST declaration node
+}
+
+fn MkPrimType(kind TypeKind) SCType {
+    return SCType{
+        kind: kind, name_start: 0, name_len: 0,
+        inner: -1, param_count: 0, ret_type: -1,
+        children_start: -1, array_size: 0, is_mut: 0, node_idx: -1,
+    };
+}
+
+enum SymKind {
+    SymVar; SymFn; SymStruct; SymEnum; SymParam; SymConst; SymTypeParam;
+    SymUnion; SymInterface; SymNewtype; SymAlias; SymExternFn; SymField; SymMethod;
+}
+
+struct Symbol {
+    kind SymKind;
+    name_start i32;
+    name_len   i32;
+    type_idx   i32;
+    node_idx   i64;
+}
+
+struct MethodEntry {
+    type_start i32;
+    type_len   i32;
+    method_start i32;
+    method_len   i32;
+    fn_type_idx  i32;
+    node_idx     i64;
+}
+
+struct CaptureEntry {
+    closure_node i64;
+    var_name_start i32;
+    var_name_len   i32;
+    mode i32;
+}
+
+struct MonoEntry {
+    fn_name_start i32;
+    fn_name_len   i32;
+    mangled_start i32;
+    mangled_len   i32;
+    node_idx      i64;
+    concrete_type i32;
+    concrete_start i64;
+    concrete_count i32;
+    fn_type_idx   i32;    // substituted function type (checker type index)
+}
+
+struct CallSite {
+    call_node_idx i64;
+    fn_name_start i32;
+    fn_name_len   i32;
+    concrete_type i32;
+    fn_node_idx   i64;
+    concrete_start i64;
+    concrete_count i32;
+}
+
+struct Checker {
+    parser  Parser;
+    types   Vec<SCType>;
+    type_children Vec<i32>;
+    symbols Vec<Symbol>;
+    methods Vec<MethodEntry>;
+    captures Vec<CaptureEntry>;
+    mono_entries Vec<MonoEntry>;
+    call_sites Vec<CallSite>;
+    scope_stack Vec<i64>;
+    scope_depth i32;
+    scope_floor i64;
+    errors  i32;
+}
+
+// ==================================================================
+// Codegen types
+// ==================================================================
+
+struct TypedVal {
+    val      *u8;
+    type_idx i32;
+}
+
+struct CgLocal {
+    name_start i32;
+    name_len   i32;
+    alloca     *u8;
+    vec_elem_ty *u8;
+    type_idx   i32;
+}
+
+struct CaptureInfo {
+    name_start i32;
+    name_len   i32;
+    alloca     *u8;
+    type_idx   i32;
+}
+
+struct PendingClosure {
+    node_idx i64;
+    fn_val   *u8;
+    env_alloca *u8;
+    env_ty   *u8;
+    captures Vec<CaptureInfo>;
+}
+
+struct Codegen {
+    ctx     *u8;
+    module  *u8;
+    builder *u8;
+    data_layout *u8;
+    cur_fn  *u8;
+    checker Checker;
+    locals  Vec<CgLocal>;
+    vec_elem_cache Vec<CgLocal>;
+    pending_closures Vec<PendingClosure>;
+    break_bb *u8;
+    cont_bb  *u8;
+    recv_type_idx i32;
+    closure_counter i32;
+    mono_type_param_start i32;
+    mono_type_param_len   i32;
+    mono_concrete_type    i32;
+    mono_fn_node_idx i64;
+    mono_gen_count   i32;
+    mono_concrete_start i64;
+}
+
+// ==================================================================
+// Error reporting — file:line:col from the first commit
+// ==================================================================
+
+fn Stderr() *u8 {
+    return fdopen(2, CStr("w"));
+}
+
+fn (p &mut Parser) ParseError(msg *u8) {
+    se := Stderr();
+    line := p.tlines.Get(p.pos);
+    col := p.tcols.Get(p.pos);
+    fprintf(se, CStr("error at line %d col %d: %s\n"), line, col, msg);
+    p.errors = p.errors + 1;
+}
+
+fn (p &mut Parser) Expect(kind i32) {
+    if p.tokens.Get(p.pos) == kind {
+        p.pos = p.pos + 1;
+        return;
+    }
+    se := Stderr();
+    line := p.tlines.Get(p.pos);
+    col := p.tcols.Get(p.pos);
+    got := p.tokens.Get(p.pos);
+    fprintf(se, CStr("error at line %d col %d: expected token %d, got token %d\n"), line, col, kind, got);
+    p.errors = p.errors + 1;
+}
+
+fn (c &mut Checker) CheckError(node_idx i64, msg *u8) {
+    se := Stderr();
+    if node_idx >= 0 {
+        nd := c.parser.nodes.Get(node_idx);
+        fprintf(se, CStr("error at line %d: %s\n"), nd.line, msg);
+    } else {
+        fprintf(se, CStr("error: %s\n"), msg);
+    }
+    c.errors = c.errors + 1;
+}
+
+fn (c &mut Checker) CheckErrorKind(node_idx i64, msg *u8, ka i32, kb i32) {
+    se := Stderr();
+    if node_idx >= 0 {
+        nd := c.parser.nodes.Get(node_idx);
+        fprintf(se, CStr("error at line %d: %s (type kind %d vs %d)\n"), nd.line, msg, ka, kb);
+    } else {
+        fprintf(se, CStr("error: %s (type kind %d vs %d)\n"), msg, ka, kb);
+    }
+    c.errors = c.errors + 1;
+}

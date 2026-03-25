@@ -1,0 +1,6 @@
+// ShelbyC Self-Hosted Compiler — Entry Point
+// Minimal stub for Phase 0 verification.
+
+fn Main() {
+    Println("shelbyc: types loaded");
+}
