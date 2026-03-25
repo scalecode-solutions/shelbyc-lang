@@ -8,15 +8,33 @@
 
 ## What This Is
 
-A unified error handling system built on balanced ternary. Three exit paths, three defer triggers, one stack, one emit function.
+A unified error handling system with three exit paths, three defer triggers, one stack, one emit function.
 
-| Trit | Exit path | Defer trigger | Keyword | Meaning |
-|------|-----------|---------------|---------|---------|
-| N (-1) | error | errdefer | `errdefer` | cleanup on failure |
-| Z (0) | normal | defer | `defer` | cleanup always |
-| P (+1) | recovered | recovery-defer | `recovery_defer` | cleanup after restart |
+| Value | Exit path | Defer trigger | Keyword | Meaning |
+|-------|-----------|---------------|---------|---------|
+| -1 | error | errdefer | `errdefer` | cleanup on failure |
+| 0 | normal | defer | `defer` | cleanup always |
+| +1 | recovered | recovery-defer | `recovery_defer` | cleanup after restart |
 
-This is not three separate features bolted together. It's one ternary system — the same N/Z/P that drives trit values, Cottrell Confluence operators, and Flow Ownership states.
+The `DeferEntry.trigger` and `exit_path` parameters are `int8_t` with three values (-1, 0, +1). This is genuinely ternary — there are exactly three exit paths and exactly three trigger types. Trit is the correct representation here.
+
+---
+
+## Where trit is correct vs where it isn't
+
+**Genuinely ternary (use trit / int8_t with 3 values):**
+- Defer trigger: errdefer(-1), defer(0), recovery(+1)
+- Exit path: error(-1), normal(0), recovered(+1)
+- trit/tryte scalar values and Cottrell operators
+- Spaceship operator result: less(-1), equal(0), greater(+1)
+
+**NOT ternary (use the type that fits):**
+- `OwnershipState`: 5 values (ALIVE, BORROWED, CONSUMED, MAYBE_CONSUMED, DROPPED) — it's an enum, not a trit
+- Flow effects: 6 kinds (READ, WRITE, CONSUME, BORROW, BORROW_MUT, DROP) — it's an enum
+- `Result.is_ok`: 2 values — it's a bool
+- `ND_DEFER.is_errdefer`: 2 values — it's a bool (the trigger trit is on DeferEntry, not on the AST)
+
+Use the right type for the cardinality. Bool for 2. Trit for 3. Enum for more.
 
 ---
 
@@ -27,11 +45,11 @@ Each part is self-contained. Read any part independently. Every part includes th
 | Part | File | What it covers |
 |------|------|---------------|
 | 1 | [01-defer-stack-refactor.md](01-defer-stack-refactor.md) | Replace `AstNode **defers` with `DeferEntry *defers`. Zero behavior change. All 768 tests pass. |
-| 2 | [02-exit-path-detection.md](02-exit-path-detection.md) | Map every exit point in the C bootstrap codegen. Assign trit values. Handle the runtime-check case for `return result_variable`. |
-| 3 | [03-errdefer.md](03-errdefer.md) | Add `errdefer` keyword, parser, codegen. The N (-1) path. Error capture with `\|e\|` syntax. |
-| 4 | [04-conditions-restarts.md](04-conditions-restarts.md) | Add `restart`, `handle`, `invoke`, `on` keywords. The P (+1) path. Continuation-passing restart mechanism. |
-| 5 | [05-flow-ownership-integration.md](05-flow-ownership-integration.md) | Connect to Flow Ownership. OwnershipState mapping to trits. Coupled solver behavior on N/Z/P paths. Restart points as constraints. |
-| 6 | [06-tensor-tile-connection.md](06-tensor-tile-connection.md) | Effects matrix as trit tile. Batch ownership propagation. Same hardware instruction for neural inference and safety analysis. |
+| 2 | [02-exit-path-detection.md](02-exit-path-detection.md) | Map every exit point in the C bootstrap codegen. Assign exit path values. Handle the runtime-check case for `return result_variable`. |
+| 3 | [03-errdefer.md](03-errdefer.md) | Add `errdefer` keyword, parser, codegen. Error path cleanup. Error capture with `\|e\|` syntax. |
+| 4 | [04-conditions-restarts.md](04-conditions-restarts.md) | Add `restart`, `handle`, `invoke`, `on` keywords. Recovery path. Continuation-passing restart mechanism. |
+| 5 | [05-flow-ownership-integration.md](05-flow-ownership-integration.md) | Connect to Flow Ownership. How each exit path affects ownership state. Coupled solver behavior at restart points. |
+| 6 | [06-tensor-tile-connection.md](06-tensor-tile-connection.md) | TritTile type, scalar dot product, SIMD lowering (ARM NEON + x86 AVX2), ownership solver batch evaluation. |
 | 7 | [07-implementation-order.md](07-implementation-order.md) | Step-by-step implementation plan. Each step tested before the next. Furling Gate at every milestone. |
 
 ---
@@ -45,44 +63,15 @@ Each part is self-contained. Read any part independently. Every part includes th
 | `src/ast.h` | 447 | Extend `ND_DEFER` union, add `ND_RESTART_DECL`, `ND_HANDLE_BLOCK`, `ND_HANDLE_ARM` |
 | `src/parser.c` | 3400+ | Add errdefer parsing, restart declarations, handle blocks |
 | `src/codegen.h` | 161 | Replace `AstNode **defers` with `DeferEntry *defers` in CgScope. Add `propagated_err_val` to Codegen. |
-| `src/cg_internal.h` | 136 | Update function signatures for trit exit path parameter |
+| `src/cg_internal.h` | 136 | Update function signatures for exit path parameter |
 | `src/cg_stmt.c` | 1780 | Rewrite defer push/emit, update all cleanup call sites |
-| `src/cg_literal.c` | 1633 | Update `?` propagation to pass N exit path, add restart codegen |
-| `src/flow.h` | 259 | Add `OS_BORROWED` to OwnershipState, update merge function |
-| `src/flow.c` | 2130 | Trit-aware ownership merge, restart point handling |
-| `src/cottrell.h` | 131 | No changes (trit ops already exist) |
-| `src/cottrell.c` | 188 | No changes (trit ops already exist) |
-
----
-
-## Ternary Coherence
-
-Every level of ShelbyC uses the same three-valued logic:
-
-```
-trit scalar:      N(-1)      Z(0)       P(+1)
-                  negative   zero       positive
-
-Cottrell ops:     & (min)    + (mod-3)  | (max)
-                  consensus  addition   dissensus
-
-Ownership:        consumed   borrowed   alive
-                  moved      lent       owned
-
-Error path:       error      normal     recovered
-                  unwind     succeed    restart
-
-Defer trigger:    errdefer   defer      recovery_defer
-                  N-only     N+Z        P-only
-
-Typestate:        moved      borrowed   owned
-                  dead       shared     exclusive
-
-Tensor effect:    consume    unchanged  create
-                  -1 select  0 skip     +1 add
-```
-
-One system. One mental model. Same trit at every scale.
+| `src/cg_literal.c` | 1633 | Update `?` propagation to pass error exit path, add restart codegen |
+| `src/flow.h` | 259 | Add `defer_trigger` to FlowEffect struct |
+| `src/flow.c` | 2130 | Path-aware ownership propagation at restart points |
+| `src/runtime.c` | 1200+ | Add `__sc_trit_tile_dot` scalar + SIMD implementations |
+| `src/types.h` | 321 | Add `TY_TRIT_TILE` type kind |
+| `src/cg_type.c` | 437 | LLVM lowering for TritTile |
+| `src/cg_builtin.c` | 637 | TritTile.Dot() codegen |
 
 ---
 
