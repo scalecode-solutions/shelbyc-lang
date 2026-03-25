@@ -1,6 +1,30 @@
 // ShelbyC Self-Hosted Compiler — Entry Point
-// Minimal stub for Phase 0 verification.
+// Phase 1: verify lexer tokenizes correctly.
+
+// Externs not already in types.smc
+extern fn __sc_get_argc() i32;
+extern fn __sc_get_argv(i i32) *u8;
+extern fn __sc_sso_new(out *u8, ptr *u8, len i64);
 
 fn Main() {
-    Println("shelbyc: types loaded");
+    argc := __sc_get_argc();
+    if argc < 2 {
+        Println("shelbyc: usage: shelbyc <file.smc>");
+        return;
+    }
+
+    filepath_c := __sc_get_argv(1);
+    filepath := "";
+    __sc_sso_new(&filepath, filepath_c, strlen(filepath_c));
+
+    src := ReadFile(filepath);
+    if src.Len() == 0 {
+        Println("shelbyc: cannot read source file");
+        return;
+    }
+
+    // Tokenize
+    p := Tokenize(src);
+    Println(p.tokens.Len());
+    Println("tokens");
 }

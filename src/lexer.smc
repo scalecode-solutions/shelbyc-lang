@@ -1,0 +1,518 @@
+// ShelbyC Lexer — Tokenizes source into token stream
+fn NewLexer(src str) Lexer {
+    sl := src.Len();
+    return Lexer{ src: src, pos: 0, slen: sl, line: 1, col: 1,
+        interp_depth: 0,
+        bd0: 0, bd1: 0, bd2: 0, bd3: 0,
+        bd4: 0, bd5: 0, bd6: 0, bd7: 0,
+    };
+}
+
+fn (l &mut Lexer) AtEnd() bool { return l.pos >= l.slen; }
+
+fn (l &mut Lexer) Peek() i32 {
+    if l.pos >= l.slen { return 0; }
+    b := l.src[l.pos];
+    r := 0 + b;
+    return r;
+}
+
+fn (l &mut Lexer) Peek2() i32 {
+    if l.pos + 1 >= l.slen { return 0; }
+    b := l.src[l.pos + 1];
+    r := 0 + b;
+    return r;
+}
+
+fn (l &mut Lexer) Adv() i32 {
+    if l.AtEnd() { return 0; }
+    b := l.src[l.pos];
+    ch := 0 + b;
+    l.pos = l.pos + 1;
+    if ch == 10 { l.line = l.line + 1; l.col = 1; }
+    else { l.col = l.col + 1; }
+    return ch;
+}
+
+fn (l &mut Lexer) Tok(kind TokenKind, start i32, ln u32, c u32) Token {
+    return Token{ kind: kind, line: ln, col: c, start: start, tlen: l.pos - start };
+}
+
+fn IsA(ch i32) bool { return (ch >= 97 && ch <= 122) || (ch >= 65 && ch <= 90) || ch == 95; }
+fn IsD(ch i32) bool { return ch >= 48 && ch <= 57; }
+fn IsAN(ch i32) bool { return IsA(ch) || IsD(ch); }
+fn IsHex(ch i32) bool { return IsD(ch) || (ch >= 97 && ch <= 102) || (ch >= 65 && ch <= 70); }
+
+fn (l &mut Lexer) GetBD(idx i32) i32 {
+    if idx == 0 { return l.bd0; }
+    if idx == 1 { return l.bd1; }
+    if idx == 2 { return l.bd2; }
+    if idx == 3 { return l.bd3; }
+    if idx == 4 { return l.bd4; }
+    if idx == 5 { return l.bd5; }
+    if idx == 6 { return l.bd6; }
+    if idx == 7 { return l.bd7; }
+    return 0;
+}
+
+fn (l &mut Lexer) SetBD(idx i32, val i32) {
+    if idx == 0 { l.bd0 = val; }
+    if idx == 1 { l.bd1 = val; }
+    if idx == 2 { l.bd2 = val; }
+    if idx == 3 { l.bd3 = val; }
+    if idx == 4 { l.bd4 = val; }
+    if idx == 5 { l.bd5 = val; }
+    if idx == 6 { l.bd6 = val; }
+    if idx == 7 { l.bd7 = val; }
+}
+
+fn (l &mut Lexer) SkipWS() {
+    while !l.AtEnd() {
+        ch := l.Peek();
+        if ch == 32 || ch == 9 || ch == 13 || ch == 10 { l.Adv(); }
+        else if ch == 47 && l.Peek2() == 47 {
+            while !l.AtEnd() && l.Peek() != 10 { l.Adv(); }
+        } else if ch == 47 && l.Peek2() == 42 {
+            l.Adv(); l.Adv();
+            d := 1;
+            while !l.AtEnd() && d > 0 {
+                if l.Peek() == 47 && l.Peek2() == 42 { l.Adv(); l.Adv(); d = d + 1; }
+                else if l.Peek() == 42 && l.Peek2() == 47 { l.Adv(); l.Adv(); d = d - 1; }
+                else { l.Adv(); }
+            }
+        } else { break; }
+    }
+}
+
+fn (l &mut Lexer) WEq(s i32, n i32, w str) bool {
+    if n != w.Len() { return false; }
+    i := 0;
+    while i < n {
+        if l.src[s + i] != w[i] { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn (l &mut Lexer) KW(s i32, n i32) TokenKind {
+    if n == 2 {
+        if l.WEq(s,n,"fn") { return TokenKind.KwFn; }
+        if l.WEq(s,n,"if") { return TokenKind.KwIf; }
+        if l.WEq(s,n,"in") { return TokenKind.KwIn; }
+        if l.WEq(s,n,"i8") { return TokenKind.KwI8; }
+        if l.WEq(s,n,"u8") { return TokenKind.KwU8; }
+        if l.WEq(s,n,"ok") { return TokenKind.KwOk; }
+    }
+    if n == 3 {
+        if l.WEq(s,n,"for") { return TokenKind.KwFor; }
+        if l.WEq(s,n,"i16") { return TokenKind.KwI16; }
+        if l.WEq(s,n,"i32") { return TokenKind.KwI32; }
+        if l.WEq(s,n,"i64") { return TokenKind.KwI64; }
+        if l.WEq(s,n,"u16") { return TokenKind.KwU16; }
+        if l.WEq(s,n,"u32") { return TokenKind.KwU32; }
+        if l.WEq(s,n,"u64") { return TokenKind.KwU64; }
+        if l.WEq(s,n,"f32") { return TokenKind.KwF32; }
+        if l.WEq(s,n,"f64") { return TokenKind.KwF64; }
+        if l.WEq(s,n,"mut") { return TokenKind.KwMut; }
+        if l.WEq(s,n,"new") { return TokenKind.KwNew; }
+        if l.WEq(s,n,"err") { return TokenKind.KwErr; }
+    }
+    if n == 4 {
+        if l.WEq(s,n,"else") { return TokenKind.KwElse; }
+        if l.WEq(s,n,"enum") { return TokenKind.KwEnum; }
+        if l.WEq(s,n,"bool") { return TokenKind.KwBool; }
+        if l.WEq(s,n,"byte") { return TokenKind.KwByte; }
+        if l.WEq(s,n,"chan") { return TokenKind.KwChan; }
+        if l.WEq(s,n,"char") { return TokenKind.KwChar; }
+        if l.WEq(s,n,"flow") { return TokenKind.KwFlow; }
+        if l.WEq(s,n,"from") { return TokenKind.KwFrom; }
+        if l.WEq(s,n,"loop") { return TokenKind.KwLoop; }
+        if l.WEq(s,n,"move") { return TokenKind.KwMove; }
+        if l.WEq(s,n,"self") { return TokenKind.KwSelf; }
+        if l.WEq(s,n,"some") { return TokenKind.KwSome; }
+        if l.WEq(s,n,"trit") { return TokenKind.KwTrit; }
+        if l.WEq(s,n,"true") { return TokenKind.True; }
+        if l.WEq(s,n,"type") { return TokenKind.KwType; }
+        if l.WEq(s,n,"void") { return TokenKind.KwVoid; }
+        if l.WEq(s,n,"wake") { return TokenKind.KwWake; }
+        if l.WEq(s,n,"none") { return TokenKind.None; }
+    }
+    if n == 5 {
+        if l.WEq(s,n,"arena") { return TokenKind.KwArena; }
+        if l.WEq(s,n,"async") { return TokenKind.KwAsync; }
+        if l.WEq(s,n,"await") { return TokenKind.KwAwait; }
+        if l.WEq(s,n,"break") { return TokenKind.KwBreak; }
+        if l.WEq(s,n,"clone") { return TokenKind.KwClone; }
+        if l.WEq(s,n,"const") { return TokenKind.KwConst; }
+        if l.WEq(s,n,"defer") { return TokenKind.KwDefer; }
+        if l.WEq(s,n,"false") { return TokenKind.False; }
+        if l.WEq(s,n,"guard") { return TokenKind.KwGuard; }
+        if l.WEq(s,n,"isize") { return TokenKind.KwIsize; }
+        if l.WEq(s,n,"match") { return TokenKind.KwMatch; }
+        if l.WEq(s,n,"tryte") { return TokenKind.KwTryte; }
+        if l.WEq(s,n,"union") { return TokenKind.KwUnion; }
+        if l.WEq(s,n,"usize") { return TokenKind.KwUsize; }
+        if l.WEq(s,n,"while") { return TokenKind.KwWhile; }
+        if l.WEq(s,n,"yield") { return TokenKind.KwYield; }
+    }
+    if n == 6 {
+        if l.WEq(s,n,"extern") { return TokenKind.KwExtern; }
+        if l.WEq(s,n,"import") { return TokenKind.KwImport; }
+        if l.WEq(s,n,"return") { return TokenKind.KwReturn; }
+        if l.WEq(s,n,"select") { return TokenKind.KwSelect; }
+        if l.WEq(s,n,"struct") { return TokenKind.KwStruct; }
+    }
+    if n == 7 { if l.WEq(s,n,"newtype") { return TokenKind.KwNewtype; } }
+    if n == 8 {
+        if l.WEq(s,n,"comptime") { return TokenKind.KwComptime; }
+        if l.WEq(s,n,"continue") { return TokenKind.KwContinue; }
+    }
+    if n == 9 { if l.WEq(s,n,"interface") { return TokenKind.KwInterface; } }
+    return TokenKind.Ident;
+}
+
+// ---- String interpolation continue: called when } closes an interpolation ----
+// Peek at the next token without consuming it (save/restore lexer state)
+fn (l &mut Lexer) PeekToken() Token {
+    saved_pos := l.pos;
+    saved_line := l.line;
+    saved_col := l.col;
+    saved_interp := l.interp_depth;
+    saved_bd0 := l.bd0; saved_bd1 := l.bd1; saved_bd2 := l.bd2; saved_bd3 := l.bd3;
+    saved_bd4 := l.bd4; saved_bd5 := l.bd5; saved_bd6 := l.bd6; saved_bd7 := l.bd7;
+
+    t := l.Next();
+
+    l.pos = saved_pos;
+    l.line = saved_line;
+    l.col = saved_col;
+    l.interp_depth = saved_interp;
+    l.bd0 = saved_bd0; l.bd1 = saved_bd1; l.bd2 = saved_bd2; l.bd3 = saved_bd3;
+    l.bd4 = saved_bd4; l.bd5 = saved_bd5; l.bd6 = saved_bd6; l.bd7 = saved_bd7;
+
+    return t;
+}
+
+fn (l &mut Lexer) LexStrContinue(s i32, ln u32, c u32) Token {
+    while !l.AtEnd() {
+        b := l.Peek();
+        if b == 34 { l.Adv(); return l.Tok(TokenKind.StrEnd, s, ln, c); }
+        if b == 92 { l.Adv(); if !l.AtEnd() { l.Adv(); } }
+        else if b == 123 && l.Peek2() != 123 {
+            // { starts new interpolation — return STR_MID
+            t := l.Tok(TokenKind.StrMid, s, ln, c);
+            l.Adv(); // consume {
+            if l.interp_depth < 8 {
+                l.SetBD(l.interp_depth, 0);
+                l.interp_depth = l.interp_depth + 1;
+            }
+            return t;
+        } else if b == 123 && l.Peek2() == 123 { l.Adv(); l.Adv(); } // escaped {{
+        else if b == 125 && l.Peek2() == 125 { l.Adv(); l.Adv(); } // escaped }}
+        else { l.Adv(); }
+    }
+    return l.Tok(TokenKind.Error, s, ln, c);
+}
+
+fn (l &mut Lexer) Next() Token {
+    // Handle interpolation: if inside interpolation and hit }, pop and continue string
+    if l.interp_depth > 0 {
+        l.SkipWS();
+        if !l.AtEnd() && l.Peek() == 125 {
+            level := l.interp_depth - 1;
+            if l.GetBD(level) == 0 {
+                // This } closes the interpolation
+                l.Adv(); // consume }
+                l.interp_depth = l.interp_depth - 1;
+                s := l.pos; ln := l.line; c := l.col;
+                return l.LexStrContinue(s, ln, c);
+            }
+        }
+    }
+
+    l.SkipWS();
+    // Skip doc comments (/// and //!) — treat as regular comments for now
+    while !l.AtEnd() && l.Peek() == 47 && l.Peek2() == 47 {
+        p3 := 0;
+        if l.pos + 2 < l.slen { p3 = 0 + l.src[l.pos + 2]; }
+        if p3 == 47 || p3 == 33 {
+            while !l.AtEnd() && l.Peek() != 10 { l.Adv(); }
+            l.SkipWS();
+        } else { break; }
+    }
+
+    if l.AtEnd() { return l.Tok(TokenKind.Eof, l.pos, l.line, l.col); }
+    s := l.pos; ln := l.line; c := l.col;
+    ch := l.Adv();
+
+    // ---- Numbers: decimal, hex (0x), octal (0o), binary (0b) ----
+    if IsD(ch) {
+        is_float := false;
+        if ch == 48 && !l.AtEnd() {
+            nx := l.Peek();
+            // Hex: 0x or 0X
+            if nx == 120 || nx == 88 {
+                l.Adv();
+                while !l.AtEnd() && (IsHex(l.Peek()) || l.Peek() == 95) { l.Adv(); }
+                return l.Tok(TokenKind.IntLit, s, ln, c);
+            }
+            // Octal: 0o or 0O
+            if nx == 111 || nx == 79 {
+                l.Adv();
+                while !l.AtEnd() && ((l.Peek() >= 48 && l.Peek() <= 55) || l.Peek() == 95) { l.Adv(); }
+                return l.Tok(TokenKind.IntLit, s, ln, c);
+            }
+            // Binary: 0b or 0B
+            if nx == 98 || nx == 66 {
+                l.Adv();
+                while !l.AtEnd() && (l.Peek() == 48 || l.Peek() == 49 || l.Peek() == 95) { l.Adv(); }
+                return l.Tok(TokenKind.IntLit, s, ln, c);
+            }
+        }
+        // Decimal digits
+        while !l.AtEnd() && (IsD(l.Peek()) || (l.Peek() == 95 && l.pos + 1 < l.slen && IsD(0 + l.src[l.pos + 1]))) { l.Adv(); }
+        // Float: decimal point (but not .. range)
+        if !l.AtEnd() && l.Peek() == 46 && l.Peek2() != 46 && l.Peek2() != 41 {
+            is_float = true;
+            l.Adv(); // .
+            while !l.AtEnd() && (IsD(l.Peek()) || (l.Peek() == 95 && l.pos + 1 < l.slen && IsD(0 + l.src[l.pos + 1]))) { l.Adv(); }
+        }
+        // Exponent: e or E
+        if !l.AtEnd() && (l.Peek() == 101 || l.Peek() == 69) {
+            is_float = true;
+            l.Adv();
+            if !l.AtEnd() && (l.Peek() == 43 || l.Peek() == 45) { l.Adv(); }
+            while !l.AtEnd() && (IsD(l.Peek()) || l.Peek() == 95) { l.Adv(); }
+        }
+        // Type suffix: _i32, _u64, _f32, _f64 etc.
+        if !l.AtEnd() && l.Peek() == 95 && l.pos + 1 < l.slen && IsA(0 + l.src[l.pos + 1]) {
+            l.Adv(); // _
+            while !l.AtEnd() && IsAN(l.Peek()) { l.Adv(); }
+            // Check if suffix is _f32 or _f64 → float
+            // (simplified: any _fXX suffix makes it float)
+        }
+        if is_float { return l.Tok(TokenKind.FloatLit, s, ln, c); }
+        return l.Tok(TokenKind.IntLit, s, ln, c);
+    }
+
+    // ---- Identifiers / keywords ----
+    if IsA(ch) {
+        // Check for raw string: r"..."
+        if ch == 114 && !l.AtEnd() && l.Peek() == 34 {
+            l.Adv(); // "
+            while !l.AtEnd() && l.Peek() != 34 { l.Adv(); }
+            if !l.AtEnd() { l.Adv(); } // closing "
+            return l.Tok(TokenKind.RawStrLit, s, ln, c);
+        }
+        while !l.AtEnd() && IsAN(l.Peek()) { l.Adv(); }
+        return l.Tok(l.KW(s, l.pos - s), s, ln, c);
+    }
+
+    // ---- Character literal: 'x', '\n', '\u{...}' ----
+    if ch == 39 {
+        if !l.AtEnd() && l.Peek() == 92 {
+            l.Adv(); // backslash
+            if !l.AtEnd() {
+                esc := l.Peek();
+                if esc == 110 || esc == 114 || esc == 116 || esc == 92 || esc == 39 || esc == 34 || esc == 48 {
+                    l.Adv(); // single escape char
+                } else if esc == 120 {
+                    l.Adv(); // x
+                    if !l.AtEnd() && IsHex(l.Peek()) { l.Adv(); }
+                    if !l.AtEnd() && IsHex(l.Peek()) { l.Adv(); }
+                } else if esc == 117 {
+                    l.Adv(); // u
+                    if !l.AtEnd() && l.Peek() == 123 {
+                        l.Adv(); // {
+                        while !l.AtEnd() && IsHex(l.Peek()) { l.Adv(); }
+                        if !l.AtEnd() && l.Peek() == 125 { l.Adv(); } // }
+                    }
+                } else { l.Adv(); }
+            }
+        } else if !l.AtEnd() && l.Peek() != 39 {
+            // Regular character (possibly multi-byte UTF-8)
+            b := l.Peek();
+            l.Adv();
+            if b >= 192 {
+                extra := 1;
+                if b >= 240 { extra = 3; }
+                else if b >= 224 { extra = 2; }
+                i := 0;
+                while i < extra && !l.AtEnd() { l.Adv(); i = i + 1; }
+            }
+        }
+        if !l.AtEnd() && l.Peek() == 39 { l.Adv(); } // closing '
+        return l.Tok(TokenKind.CharLit, s, ln, c);
+    }
+
+    // ---- String literal with interpolation ----
+    if ch == 34 {
+        while !l.AtEnd() {
+            b := l.Peek();
+            if b == 34 { l.Adv(); return l.Tok(TokenKind.StrLit, s, ln, c); }
+            if b == 92 { l.Adv(); if !l.AtEnd() { l.Adv(); } }
+            // Interpolation: unescaped { that isn't {{
+            else if b == 123 && l.Peek2() != 123 {
+                t := l.Tok(TokenKind.StrBegin, s, ln, c);
+                l.Adv(); // consume {
+                if l.interp_depth < 8 {
+                    l.SetBD(l.interp_depth, 0);
+                    l.interp_depth = l.interp_depth + 1;
+                }
+                return t;
+            }
+            // Escaped braces {{ and }}
+            else if b == 123 && l.Peek2() == 123 { l.Adv(); l.Adv(); }
+            else if b == 125 && l.Peek2() == 125 { l.Adv(); l.Adv(); }
+            else { l.Adv(); }
+        }
+        return l.Tok(TokenKind.Error, s, ln, c);
+    }
+
+    // ---- Backtick/multiline string ----
+    if ch == 96 {
+        while !l.AtEnd() && l.Peek() != 96 { l.Adv(); }
+        if !l.AtEnd() { l.Adv(); } // closing `
+        return l.Tok(TokenKind.MultilineStr, s, ln, c);
+    }
+
+    nx := l.Peek();
+    if ch == 43 {
+        if nx == 43 { l.Adv(); return l.Tok(TokenKind.PlusPlus, s, ln, c); }
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.PlusEq, s, ln, c); }
+        return l.Tok(TokenKind.Plus, s, ln, c);
+    }
+    if ch == 45 {
+        if nx == 45 { l.Adv(); return l.Tok(TokenKind.MinusMinus, s, ln, c); }
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.MinusEq, s, ln, c); }
+        return l.Tok(TokenKind.Minus, s, ln, c);
+    }
+    if ch == 42 {
+        if nx == 42 { l.Adv(); return l.Tok(TokenKind.StarStar, s, ln, c); }
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.StarEq, s, ln, c); }
+        return l.Tok(TokenKind.Star, s, ln, c);
+    }
+    if ch == 47 {
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.SlashEq, s, ln, c); }
+        return l.Tok(TokenKind.Slash, s, ln, c);
+    }
+    if ch == 37 {
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.PercentEq, s, ln, c); }
+        return l.Tok(TokenKind.Percent, s, ln, c);
+    }
+    if ch == 61 {
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.EqEq, s, ln, c); }
+        if nx == 62 { l.Adv(); return l.Tok(TokenKind.FatArrow, s, ln, c); }
+        return l.Tok(TokenKind.Eq, s, ln, c);
+    }
+    if ch == 33 {
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.BangEq, s, ln, c); }
+        return l.Tok(TokenKind.Bang, s, ln, c);
+    }
+    if ch == 60 {
+        if nx == 61 { l.Adv();
+            if l.Peek() == 62 { l.Adv(); return l.Tok(TokenKind.Spaceship, s, ln, c); }
+            return l.Tok(TokenKind.LtEq, s, ln, c);
+        }
+        if nx == 60 { l.Adv();
+            if l.Peek() == 61 { l.Adv(); return l.Tok(TokenKind.LtLtEq, s, ln, c); }
+            return l.Tok(TokenKind.LtLt, s, ln, c);
+        }
+        if nx == 45 { l.Adv(); return l.Tok(TokenKind.LtMinus, s, ln, c); }
+        return l.Tok(TokenKind.Lt, s, ln, c);
+    }
+    if ch == 62 {
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.GtEq, s, ln, c); }
+        if nx == 62 { l.Adv();
+            if l.Peek() == 61 { l.Adv(); return l.Tok(TokenKind.GtGtEq, s, ln, c); }
+            return l.Tok(TokenKind.GtGt, s, ln, c);
+        }
+        return l.Tok(TokenKind.Gt, s, ln, c);
+    }
+    if ch == 38 {
+        if nx == 38 { l.Adv(); return l.Tok(TokenKind.AmpAmp, s, ln, c); }
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.AmpEq, s, ln, c); }
+        return l.Tok(TokenKind.Amp, s, ln, c);
+    }
+    if ch == 124 {
+        if nx == 124 { l.Adv(); return l.Tok(TokenKind.PipePipe, s, ln, c); }
+        if nx == 62 { l.Adv(); return l.Tok(TokenKind.PipeGt, s, ln, c); }
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.PipeEq, s, ln, c); }
+        return l.Tok(TokenKind.Pipe, s, ln, c);
+    }
+    if ch == 94 {
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.CaretEq, s, ln, c); }
+        return l.Tok(TokenKind.Caret, s, ln, c);
+    }
+    if ch == 58 {
+        if nx == 61 { l.Adv(); return l.Tok(TokenKind.ColonEq, s, ln, c); }
+        return l.Tok(TokenKind.Colon, s, ln, c);
+    }
+    if ch == 46 {
+        if nx == 46 { l.Adv();
+            if l.Peek() == 61 { l.Adv(); return l.Tok(TokenKind.DotDotEq, s, ln, c); }
+            if l.Peek() == 46 { l.Adv(); return l.Tok(TokenKind.Ellipsis, s, ln, c); }
+            return l.Tok(TokenKind.DotDot, s, ln, c);
+        }
+        return l.Tok(TokenKind.Dot, s, ln, c);
+    }
+    if ch == 63 {
+        if nx == 46 { l.Adv(); return l.Tok(TokenKind.QuestionDot, s, ln, c); }
+        if nx == 63 { l.Adv(); return l.Tok(TokenKind.QuestionQuestion, s, ln, c); }
+        return l.Tok(TokenKind.Question, s, ln, c);
+    }
+    if ch == 126 { return l.Tok(TokenKind.Tilde, s, ln, c); }
+    if ch == 40 { return l.Tok(TokenKind.LParen, s, ln, c); }
+    if ch == 41 { return l.Tok(TokenKind.RParen, s, ln, c); }
+    if ch == 123 {
+        if l.interp_depth > 0 {
+            level := l.interp_depth - 1;
+            l.SetBD(level, l.GetBD(level) + 1);
+        }
+        return l.Tok(TokenKind.LBrace, s, ln, c);
+    }
+    if ch == 125 {
+        if l.interp_depth > 0 {
+            level := l.interp_depth - 1;
+            l.SetBD(level, l.GetBD(level) - 1);
+        }
+        return l.Tok(TokenKind.RBrace, s, ln, c);
+    }
+    if ch == 91 { return l.Tok(TokenKind.LBracket, s, ln, c); }
+    if ch == 93 { return l.Tok(TokenKind.RBracket, s, ln, c); }
+    if ch == 59 { return l.Tok(TokenKind.Semicolon, s, ln, c); }
+    if ch == 44 { return l.Tok(TokenKind.Comma, s, ln, c); }
+    if ch == 64 { return l.Tok(TokenKind.At, s, ln, c); }
+    if ch == 35 { return l.Tok(TokenKind.Hash, s, ln, c); }
+    return l.Tok(TokenKind.Error, s, ln, c);
+}
+fn Tokenize(src str) Parser {
+    // Use the lexer to tokenize, store results in vecs
+    l := NewLexer(src);
+    kinds := Vec<i32>.New();
+    starts := Vec<i32>.New();
+    lens := Vec<i32>.New();
+    lines := Vec<u32>.New();
+    cols := Vec<u32>.New();
+
+    tc := 0;
+    while !l.AtEnd() {
+        tok := l.Next();
+        kinds.Push(tok.kind.Tag());
+        starts.Push(tok.start);
+        lens.Push(tok.tlen);
+        lines.Push(tok.line);
+        cols.Push(tok.col);
+        tc = tc + 1;
+        if tok.kind.Is(TokenKind.Eof) { break; }
+        if tc > 99999 { break; }
+    }
+
+    return Parser{
+        src: src,
+        tokens: kinds, tstarts: starts, tlens: lens,
+        tlines: lines, tcols: cols,
+        pos: 0, nodes: Vec<Node>.New(), errors: 0,
+        children: Vec<i64>.New(),
+    };
+}
