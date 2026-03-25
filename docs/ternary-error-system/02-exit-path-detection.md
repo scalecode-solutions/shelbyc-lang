@@ -1,16 +1,16 @@
 # Part 2: Exit Path Detection
 
-**Goal:** Map every exit point in the C bootstrap codegen and assign it a trit value. No new keywords, no new syntax — just change the existing `cg_emit_all_scope_cleanup(cg)` calls to `cg_emit_all_scope_cleanup_trit(cg, exit_path)` with the correct trit.
+**Goal:** Map every exit point in the C bootstrap codegen and assign it a pentit value. No new keywords, no new syntax — just change the existing `cg_emit_all_scope_cleanup(cg)` calls to `cg_emit_all_scope_cleanup_pentit(cg, exit_path)` with the correct pentit.
 
 **Files modified:** `cg_stmt.c`, `cg_literal.c`
 
-**Depends on:** Part 1 (DeferEntry struct and _trit functions exist)
+**Depends on:** Part 1 (DeferEntry struct and _pentit functions exist)
 
 ---
 
 ## Complete exit point inventory
 
-There are exactly 6 places in the C bootstrap that call cleanup functions before exiting a scope or function. Each one gets a trit.
+There are exactly 7 places in the C bootstrap that call cleanup functions before exiting a scope or function. Each one gets a pentit value.
 
 ---
 
@@ -37,16 +37,16 @@ if (val) {
 
 #### After:
 ```c
-/* Determine exit path trit from the return expression */
-int8_t exit_path = 0;  /* default: Z (normal) */
+/* Determine exit path pentit from the return expression */
+int8_t exit_path = 2;  /* default: Z (normal) */
 if (node->u.single.expr) {
     AstNode *ret_expr = node->u.single.expr;
     if (ret_expr->kind == ND_ERR) {
         /* return err(...) — explicit error return */
-        exit_path = -1;  /* N */
+        exit_path = 1;  /* N1 (error) */
     } else if (ret_expr->kind == ND_OK) {
         /* return ok(...) — explicit ok return */
-        exit_path = 0;   /* Z */
+        exit_path = 2;   /* Z (normal) */
     } else {
         /* Could be returning a Result variable — check type */
         Type *ret_t = type_resolve(cg_expr_type(cg, ret_expr));
@@ -65,7 +65,7 @@ if (node->u.single.expr) {
 }
 
 /* Static path — known at compile time */
-cg_emit_all_scope_cleanup_trit(cg, exit_path);
+cg_emit_all_scope_cleanup_pentit(cg, exit_path);
 if (val) {
     LLVMTypeRef fn_ret_type = LLVMGetReturnType(
         LLVMGlobalGetValueType(cg->cur_fn));
@@ -75,10 +75,10 @@ if (val) {
     LLVMBuildRetVoid(cg->builder);
 ```
 
-**Trit value:**
-- `return ok(...)` → Z (0)
-- `return err(...)` → N (-1)
-- `return void` → Z (0)
+**Pentit value:**
+- `return ok(...)` → Z (2)
+- `return err(...)` → N1 (1)
+- `return void` → Z (2)
 - `return result_variable` → runtime branch (see below)
 
 ---
@@ -98,11 +98,11 @@ LLVMBuildBr(cg->builder, cg->tco_loop_bb);
 
 #### After:
 ```c
-cg_emit_all_scope_cleanup_trit(cg, 0);  /* Z: tail calls succeed */
+cg_emit_all_scope_cleanup_pentit(cg, 2);  /* Z: tail calls succeed */
 LLVMBuildBr(cg->builder, cg->tco_loop_bb);
 ```
 
-**Trit value:** Always Z (0). A tail call is a successful continuation. If the tail call returns an error, the NEXT iteration handles it — this iteration succeeded in dispatching.
+**Pentit value:** Always Z (2). A tail call is a successful continuation. If the tail call returns an error, the NEXT iteration handles it — this iteration succeeded in dispatching.
 
 ---
 
@@ -123,14 +123,14 @@ LLVMBuildRet(cg->builder, ret_val);
 ```c
 /* Store the error value for errdefer |e| capture */
 cg->propagated_err_val = err_val;
-cg_emit_all_scope_cleanup_trit(cg, -1);  /* N: error propagation */
+cg_emit_all_scope_cleanup_pentit(cg, 1);  /* N1: error propagation */
 cg->propagated_err_val = NULL;  /* clear after use */
 LLVMBuildRet(cg->builder, ret_val);
 ```
 
-**Trit value:** Always N (-1). The `?` operator error branch IS the error path by definition. This is the most important call site — it's where errdefer actually fires.
+**Pentit value:** Always N1 (1). The `?` operator error branch IS the error path by definition. This is the most important call site — it's where errdefer actually fires.
 
-**The `propagated_err_val` assignment** is critical: it stores the error value so that `cg_emit_scope_defers_trit` can bind it for `errdefer |e| { ... }` capture blocks.
+**The `propagated_err_val` assignment** is critical: it stores the error value so that `cg_emit_scope_defers_pentit` can bind it for `errdefer |e| { ... }` capture blocks.
 
 ---
 
@@ -150,11 +150,11 @@ LLVMBuildRetVoid(cg->builder);
 #### After:
 ```c
 cg->propagated_err_val = NULL;  /* no error value to capture in void return */
-cg_emit_all_scope_cleanup_trit(cg, -1);  /* N: still an error path */
+cg_emit_all_scope_cleanup_pentit(cg, 1);  /* N1: still an error path */
 LLVMBuildRetVoid(cg->builder);
 ```
 
-**Trit value:** Always N (-1). Even though the return is void, this IS the error path — the function is bailing out because a `?` check failed.
+**Pentit value:** Always N1 (1). Even though the return is void, this IS the error path — the function is bailing out because a `?` check failed.
 
 ---
 
@@ -177,11 +177,11 @@ void cg_emit_scope_cleanup(Codegen *cg, CgScope *scope) {
 (Already done in Part 1 — wrapper passes Z)
 ```c
 void cg_emit_scope_cleanup(Codegen *cg, CgScope *scope) {
-    cg_emit_scope_cleanup_trit(cg, scope, 0);  /* Z: normal scope exit */
+    cg_emit_scope_cleanup_pentit(cg, scope, 2);  /* Z: normal scope exit */
 }
 ```
 
-**Trit value:** Always Z (0). A block ending is a normal scope exit. Not an error.
+**Pentit value:** Always Z (2). A block ending is a normal scope exit. Not an error.
 
 ---
 
@@ -197,12 +197,36 @@ void cg_emit_scope_cleanup(Codegen *cg, CgScope *scope) {
 ```c
 void cg_emit_cleanup_to_scope(Codegen *cg, CgScope *stop) {
     for (CgScope *s = cg->scope; s && s != stop; s = s->parent) {
-        cg_emit_scope_cleanup_trit(cg, s, 0);  /* Z: loop exit is not an error */
+        cg_emit_scope_cleanup_pentit(cg, s, 2);  /* Z: loop exit is not an error */
     }
 }
 ```
 
-**Trit value:** Always Z (0). Breaking out of a loop is not an error condition.
+**Pentit value:** Always Z (2). Breaking out of a loop is not an error condition.
+
+---
+
+### Exit Point 7: panic (NEW)
+
+**Context:** When a panic is triggered (assertion failure, unreachable code, explicit `panic()` call), the exit path is N2 — the most extreme negative.
+
+**File:** `src/cg_stmt.c` (or `src/cg_builtin.c` if panic is a builtin)
+
+#### After:
+```c
+/* Panic path: N2 — only panicdefer and errdefer (N-side) fire.
+ * defer (Z) also fires because Z fires always.
+ * successdefer and recoverdefer do NOT fire. */
+cg_emit_all_scope_cleanup_pentit(cg, 0);  /* N2: panic */
+/* Emit abort/trap after cleanup */
+```
+
+**Pentit value:** Always N2 (0). Panic is the most extreme negative exit. This triggers:
+- `panicdefer` (trigger=0, N2): fires because `0 <= 0`
+- `errdefer` (trigger=1, N1): fires because `0 <= 1`
+- `defer` (trigger=2, Z): fires because Z always fires
+- `successdefer` (trigger=3, P1): does NOT fire because `0 >= 3` is false
+- `recoverdefer` (trigger=4, P2): does NOT fire because `0 >= 4` is false
 
 ---
 
@@ -221,12 +245,12 @@ When the return expression is a bare variable (not `ok(...)` or `err(...)`), and
  *
  *   ok_cleanup_bb:
  *     ; Z (normal) cleanup: defers only
- *     cg_emit_all_scope_cleanup_trit(cg, 0)
+ *     cg_emit_all_scope_cleanup_pentit(cg, 2)
  *     br merge_bb
  *
  *   err_cleanup_bb:
- *     ; N (error) cleanup: errdefers + defers
- *     cg_emit_all_scope_cleanup_trit(cg, -1)
+ *     ; N1 (error) cleanup: errdefers + defers
+ *     cg_emit_all_scope_cleanup_pentit(cg, 1)
  *     br merge_bb
  *
  *   merge_bb:
@@ -246,16 +270,16 @@ static void cg_emit_result_path_branch(Codegen *cg, LLVMValueRef result_val) {
 
     /* OK path: Z cleanup only */
     LLVMPositionBuilderAtEnd(cg->builder, ok_bb);
-    cg_emit_all_scope_cleanup_trit(cg, 0);   /* Z */
+    cg_emit_all_scope_cleanup_pentit(cg, 2);   /* Z (2) */
     if (!cg_block_terminated(cg))
         LLVMBuildBr(cg->builder, merge_bb);
 
-    /* Error path: N cleanup (errdefers + defers) */
+    /* Error path: N1 cleanup (errdefers + defers) */
     LLVMPositionBuilderAtEnd(cg->builder, err_bb);
     /* Extract error value for errdefer |e| capture */
     cg->propagated_err_val = LLVMBuildExtractValue(cg->builder,
         result_val, 1, "exit.err.data");
-    cg_emit_all_scope_cleanup_trit(cg, -1);  /* N */
+    cg_emit_all_scope_cleanup_pentit(cg, 1);  /* N1 (1) */
     cg->propagated_err_val = NULL;
     if (!cg_block_terminated(cg))
         LLVMBuildBr(cg->builder, merge_bb);
@@ -266,25 +290,28 @@ static void cg_emit_result_path_branch(Codegen *cg, LLVMValueRef result_val) {
 
 **When this triggers:** Only for `return someVariable` where `someVariable` is typed as Result. For `return ok(...)` and `return err(...)`, the path is known at compile time and no branch is needed.
 
+**Note:** The runtime branch only distinguishes Z vs N1. It does not produce N2 (panic), P1 (success), or P2 (recovery) — those paths are always statically known at compile time. Panic is explicit. Recovery comes from the restart mechanism. The runtime ambiguity is only between "was this Result an ok or an err?"
+
 ---
 
-## Summary: exit point → trit mapping
+## Summary: exit point → pentit mapping
 
-| Exit point | File:Line | Trit | Rationale |
-|-----------|-----------|------|-----------|
-| `return ok(...)` | cg_stmt.c:345 | Z (0) | Explicit success |
-| `return err(...)` | cg_stmt.c:345 | N (-1) | Explicit error |
-| `return result_var` | cg_stmt.c:345 | Runtime branch | Can't know statically |
-| `return void` | cg_stmt.c:345 | Z (0) | Normal exit |
-| TCO tail call | cg_stmt.c:316 | Z (0) | Continuation, not error |
-| `?` error branch | cg_literal.c:915 | N (-1) | Error propagation |
-| `?` void fallback | cg_literal.c:919 | N (-1) | Error propagation |
-| Scope exit `}` | cg_stmt.c:20 | Z (0) | Normal scope end |
-| break/continue | cg_stmt.c:34 | Z (0) | Loop control, not error |
-| Restart recovery | (Part 4) | P (+1) | Error was fixed |
+| Exit point | File:Line | Pentit | Value | Rationale |
+|-----------|-----------|--------|-------|-----------|
+| `return ok(...)` | cg_stmt.c:345 | Z | 2 | Explicit success |
+| `return err(...)` | cg_stmt.c:345 | N1 | 1 | Explicit error |
+| `return result_var` | cg_stmt.c:345 | Runtime | 1 or 2 | Can't know statically |
+| `return void` | cg_stmt.c:345 | Z | 2 | Normal exit |
+| TCO tail call | cg_stmt.c:316 | Z | 2 | Continuation, not error |
+| `?` error branch | cg_literal.c:915 | N1 | 1 | Error propagation |
+| `?` void fallback | cg_literal.c:919 | N1 | 1 | Error propagation |
+| Scope exit `}` | cg_stmt.c:20 | Z | 2 | Normal scope end |
+| break/continue | cg_stmt.c:34 | Z | 2 | Loop control, not error |
+| panic | cg_stmt.c (or builtin) | N2 | 0 | Fatal/unrecoverable |
+| Restart recovery | (Part 4) | P2 | 4 | Error was fixed |
 
 ---
 
 ## Verification
 
-After this step: run all 768 Furling Gate tests. Since no existing code uses errdefer (trigger=-1) or recovery-defer (trigger=+1), the behavior is identical. The only change is that the `?` error path now sets `propagated_err_val` before cleanup (which is a no-op since no errdefers with capture exist yet).
+After this step: run all 772 Furling Gate tests. Since no existing code uses errdefer (trigger=1), panicdefer (trigger=0), successdefer (trigger=3), or recoverdefer (trigger=4), the behavior is identical. The only change is that the `?` error path now sets `propagated_err_val` before cleanup (which is a no-op since no errdefers with capture exist yet).

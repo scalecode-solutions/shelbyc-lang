@@ -1,10 +1,10 @@
 # Part 4: Conditions and Restarts — The P Path
 
-**Goal:** Add `restart`, `handle`, `invoke`, `on` keywords. The P (+1) path in the ternary system. When an error occurs, the code at the error site offers recovery options. The caller chooses which one. The stack doesn't unwind — the restart runs at the error site and produces a replacement value.
+**Goal:** Add `restart`, `handle`, `invoke`, `on` keywords. The P2 (4) path in the pentit system. When an error occurs, the code at the error site offers recovery options. The caller chooses which one. The stack doesn't unwind — the restart runs at the error site and produces a replacement value. Also add `successdefer` as the P1 (3) path — cleanup that runs on any success (normal or recovered).
 
 **Files modified:** `token.h`, `lexer.c`, `ast.h`, `parser.c`, `cg_stmt.c`, `cg_literal.c`
 
-**Depends on:** Parts 1-3 (DeferEntry with trit, exit path detection, errdefer)
+**Depends on:** Parts 1-3 (DeferEntry with pentit, exit path detection, errdefer/panicdefer)
 
 ---
 
@@ -12,7 +12,7 @@
 
 ```
         Caller                           Callee
-        ──────                           ──────
+        ------                           ------
 
     handle ReadConfig(path) {        fn ReadConfig(path str) Result<Config, Error> {
       on FileNotFound =>                 data := ReadFile(path)
@@ -29,19 +29,36 @@
 ```
 
 **Timeline of a recovered call:**
-1. Caller sets up handle table: "if FileNotFound → invoke RetryWith, if ParseError → invoke UseDefault"
+1. Caller sets up handle table: "if FileNotFound -> invoke RetryWith, if ParseError -> invoke UseDefault"
 2. Caller calls ReadConfig(path)
 3. ReadFile(path) fails with FileNotFound
 4. Before unwinding, runtime checks: is there a restart handler for this error?
 5. Yes — caller said invoke RetryWith(alt). Runtime calls the restart body with alt.
 6. Restart body returns ReadFile(alt) — a replacement value for `data`.
 7. Execution continues at the statement AFTER `data := ReadFile(path) restart ...`
-8. Exit path = P (+1). Errdefers don't run. Resources are still live.
+8. Exit path = P2 (4). Errdefers don't run. Resources are still live. `recoverdefer` fires.
 
 **Timeline of an unhandled error (no handle block):**
 1. ReadFile(path) fails with FileNotFound
 2. Before unwinding, runtime checks: is there a restart handler? No.
-3. Normal N path — errdefers run, defers run, error propagates via `?` or `return err(...)`.
+3. Normal N1 path — errdefers run, defers run, error propagates via `?` or `return err(...)`.
+
+---
+
+## The P-side defer keywords
+
+| Keyword | Trigger | Raw | Fires when |
+|---------|---------|-----|------------|
+| `successdefer` | P1 | 3 | exit_path >= 3 (normal success or recovery) |
+| `recoverdefer` | P2 | 4 | exit_path >= 4 (recovery only) |
+
+**`successdefer`** is the P-side mirror of `errdefer`. It runs on any non-error exit: normal return (Z, which satisfies `2 >= 3`... wait, no. Let's be precise.)
+
+**Correction on the firing rule:** `successdefer` (trigger=3, P1) fires when `exit_path >= 3`. Z (2) does NOT satisfy `2 >= 3`. So `successdefer` fires only on P1 and P2 exits — explicit success paths. This is distinct from `defer` (Z), which fires always.
+
+Use case: `successdefer { commit_transaction(); }` — only commit if we're exiting via success, not on error, and not on normal scope exit that doesn't involve a success signal.
+
+**`recoverdefer`** fires only on P2 (recovery). Use case: `recoverdefer { log("recovered from error") }` — logging that recovery happened.
 
 ---
 
@@ -51,15 +68,20 @@
 **Location:** Alphabetically sorted with other keywords
 
 ```c
-    TOK_KW_ERRDEFER,     /* (added in Part 3) */
+    TOK_KW_ERRDEFER,      /* (added in Part 3) */
     // ...
-    TOK_KW_HANDLE,       /* handle expr { ... } */
+    TOK_KW_HANDLE,        /* handle expr { ... } */
     // ...
-    TOK_KW_INVOKE,       /* invoke RestartName(args) */
+    TOK_KW_INVOKE,        /* invoke RestartName(args) */
     // ...
-    TOK_KW_ON,           /* on ErrorType => ... (inside handle block) */
+    TOK_KW_ON,            /* on ErrorType => ... (inside handle block) */
     // ...
-    TOK_KW_RESTART,      /* restart Name(params) { body } */
+    TOK_KW_PANICDEFER,    /* (added in Part 3) */
+    // ...
+    TOK_KW_RECOVERDEFER,  /* recoverdefer expr; */
+    TOK_KW_RESTART,       /* restart Name(params) { body } */
+    // ...
+    TOK_KW_SUCCESSDEFER,  /* successdefer expr; */
 ```
 
 Insert each at the correct alphabetical position in the enum. The lexer keyword table must match.
@@ -68,21 +90,26 @@ Insert each at the correct alphabetical position in the enum. The lexer keyword 
 **Location:** Keywords table
 
 ```c
-    {"handle",    TOK_KW_HANDLE},
+    {"handle",       TOK_KW_HANDLE},
     // ...
-    {"invoke",    TOK_KW_INVOKE},
+    {"invoke",       TOK_KW_INVOKE},
     // ...
-    {"on",        TOK_KW_ON},
+    {"on",           TOK_KW_ON},
     // ...
-    {"restart",   TOK_KW_RESTART},
+    {"recoverdefer", TOK_KW_RECOVERDEFER},
+    {"restart",      TOK_KW_RESTART},
+    // ...
+    {"successdefer", TOK_KW_SUCCESSDEFER},
 ```
 
 And the token-to-string function:
 ```c
-    case TOK_KW_HANDLE:    return "handle";
-    case TOK_KW_INVOKE:    return "invoke";
-    case TOK_KW_ON:        return "on";
-    case TOK_KW_RESTART:   return "restart";
+    case TOK_KW_HANDLE:       return "handle";
+    case TOK_KW_INVOKE:       return "invoke";
+    case TOK_KW_ON:           return "on";
+    case TOK_KW_RECOVERDEFER: return "recoverdefer";
+    case TOK_KW_RESTART:      return "restart";
+    case TOK_KW_SUCCESSDEFER: return "successdefer";
 ```
 
 ---
@@ -123,20 +150,13 @@ And the token-to-string function:
         } handle_arm;
 ```
 
+### Extend ND_DEFER for successdefer and recoverdefer:
+
+The `defer` union member from Part 3 already uses `int8_t trigger` — it supports all pentit values. For successdefer (trigger=3) and recoverdefer (trigger=4), the parser sets the trigger accordingly. No new union member needed.
+
 ### Extend restartable expressions:
 
-Expressions that can have restart declarations need a way to attach them. Add to the `call` union member:
-
-```c
-        /* ND_CALL */
-        struct {
-            AstNode *callee;
-            AstList *args;
-            AstList *restarts;          /* NEW: list of ND_RESTART_DECL, NULL if none */
-        } call;
-```
-
-Or alternatively, add restarts to a new wrapper node:
+Expressions that can have restart declarations need a way to attach them. Use a wrapper node:
 
 ```c
         /* ND_RESTARTABLE: wraps an expression with restart declarations */
@@ -150,7 +170,57 @@ The wrapper approach is cleaner — any expression can be restartable, not just 
 
 ---
 
-## Step 4.3: Parser — restart declarations
+## Step 4.3: Parser — successdefer and recoverdefer
+
+**File:** `src/parser.c`
+
+Extend the defer/errdefer/panicdefer parsing from Part 3 to also handle successdefer and recoverdefer:
+
+```c
+    /* Defer / Errdefer / Panicdefer / Successdefer / Recoverdefer */
+    if (check(p, TOK_KW_DEFER) || check(p, TOK_KW_ERRDEFER) ||
+        check(p, TOK_KW_PANICDEFER) || check(p, TOK_KW_SUCCESSDEFER) ||
+        check(p, TOK_KW_RECOVERDEFER)) {
+
+        int8_t trigger = 2;  /* Z: defer (default) */
+        bool has_capture = false;
+
+        if (check(p, TOK_KW_PANICDEFER)) {
+            trigger = 0;     /* N2: panicdefer */
+            has_capture = true;
+        } else if (check(p, TOK_KW_ERRDEFER)) {
+            trigger = 1;     /* N1: errdefer */
+            has_capture = true;
+        } else if (check(p, TOK_KW_SUCCESSDEFER)) {
+            trigger = 3;     /* P1: successdefer */
+        } else if (check(p, TOK_KW_RECOVERDEFER)) {
+            trigger = 4;     /* P2: recoverdefer */
+        }
+        advance(p);
+
+        AstNode *n = make_node(p, ND_DEFER, loc);
+        n->u.defer.trigger = trigger;
+        n->u.defer.err_capture = NULL;
+
+        /* Error capture only for N-side defers */
+        if (has_capture && check(p, TOK_PIPE)) {
+            /* ... same |e| capture logic as Part 3 ... */
+        }
+
+        /* Body */
+        if (check(p, TOK_LBRACE)) {
+            n->u.defer.expr = parse_block(p);
+        } else {
+            n->u.defer.expr = parse_expression(p, 0);
+            match(p, TOK_SEMICOLON);
+        }
+        return n;
+    }
+```
+
+---
+
+## Step 4.4: Parser — restart declarations
 
 **File:** `src/parser.c`
 
@@ -209,7 +279,7 @@ In `parse_statement`, after parsing a VarDecl's init expression:
 
 ---
 
-## Step 4.4: Parser — handle blocks
+## Step 4.5: Parser — handle blocks
 
 **File:** `src/parser.c`
 **Location:** In `parse_expression` or `parse_statement` as a new expression form
@@ -275,7 +345,7 @@ result := handle ReadConfig("config.json") {
 
 ---
 
-## Step 4.5: Codegen — restartable expressions
+## Step 4.6: Codegen — restartable expressions
 
 **File:** `src/cg_literal.c` or `src/cg_expr.c`
 
@@ -355,7 +425,7 @@ When the codegen encounters `ND_RESTARTABLE`, it:
         /* Check if a handle block registered a restart choice.
          * The restart_choice variable is set by ND_HANDLE_BLOCK before the call.
          * It's an i32: -1 = no handler, 0..N-1 = which restart to invoke.
-         * If no handle block → unwind normally. */
+         * If no handle block -> unwind normally. */
         LLVMValueRef choice = LLVMConstInt(
             LLVMInt32TypeInContext(cg->ctx), (uint64_t)-1, true);
         if (cg->restart_choice_alloca) {
@@ -402,12 +472,16 @@ When the codegen encounters `ND_RESTARTABLE`, it:
             /* The restart body's return value becomes the replacement */
             restart_vals[ri] = restart_result;
 
+            /* Emit recoverdefer cleanup: exit_path = P2 (4)
+             * This fires recoverdefer and successdefer entries. */
+            cg_emit_scope_cleanup_pentit(cg, cg->scope, 4);  /* P2: recovery */
+
             cg_pop_scope(cg);
             if (!cg_block_terminated(cg))
                 LLVMBuildBr(cg->builder, merge_bb);
         }
 
-        /* Unwind path: no restart matched → normal N error path */
+        /* Unwind path: no restart matched -> normal N1 error path */
         LLVMPositionBuilderAtEnd(cg->builder, unwind_bb);
         cg->propagated_err_val = err_val;
         /* The expression's caller (VarDecl or ExprStmt) handles the error.
@@ -440,9 +514,16 @@ When the codegen encounters `ND_RESTARTABLE`, it:
 
 **NOTE:** This codegen is more complex than defer/errdefer because restarts involve continuation — the function doesn't unwind, it resumes. The PHI node merges the original success value with restart recovery values. The unwind path produces undef because if no restart handles the error, the value is never used (the `?` operator catches it on the next line).
 
+**Recovery exit path:** When a restart body completes, the exit path is P2 (4). This triggers:
+- `recoverdefer` (trigger=4, P2): fires because `4 >= 4`
+- `successdefer` (trigger=3, P1): fires because `4 >= 3`
+- `defer` (trigger=2, Z): fires because Z always fires
+- `errdefer` (trigger=1, N1): does NOT fire because `4 <= 1` is false
+- `panicdefer` (trigger=0, N2): does NOT fire because `4 <= 0` is false
+
 ---
 
-## Step 4.6: Codegen — handle blocks
+## Step 4.7: Codegen — handle blocks
 
 **File:** `src/cg_expr.c` or `src/cg_literal.c`
 
@@ -495,19 +576,57 @@ This is achievable with LLVM's existing infrastructure (switch, phi, basic block
 
 ---
 
-## Step 4.7: Add restart_choice_alloca to Codegen struct
+## Step 4.8: Add restart_choice_alloca to Codegen struct
 
 **File:** `src/codegen.h`
 **Location:** Inside Codegen struct
 
 ```c
-    /* Ternary error system: restart choice mechanism */
+    /* Composable error system: restart choice mechanism */
     LLVMValueRef     restart_choice_alloca;  /* set by ND_HANDLE_BLOCK, read by ND_RESTARTABLE */
 ```
 
 ---
 
-## Step 4.8: Tests
+## Step 4.9: Update ND_DEFER codegen for successdefer and recoverdefer
+
+**File:** `src/cg_stmt.c`
+**Location:** `case ND_DEFER` (updated in Part 3)
+
+Add cases for the P-side triggers:
+
+```c
+    case ND_DEFER:
+        if (node->u.defer.expr) {
+            int8_t trigger = node->u.defer.trigger;
+            switch (trigger) {
+            case 0:  /* N2: panicdefer */
+                cg_push_panicdefer(cg, node->u.defer.expr);
+                if (node->u.defer.err_capture) {
+                    cg->scope->defers[cg->scope->defer_count - 1].err_capture =
+                        node->u.defer.err_capture;
+                }
+                break;
+            case 1:  /* N1: errdefer */
+                cg_push_errdefer(cg, node->u.defer.expr, node->u.defer.err_capture);
+                break;
+            case 2:  /* Z: defer */
+                cg_push_defer(cg, node->u.defer.expr);
+                break;
+            case 3:  /* P1: successdefer */
+                cg_push_successdefer(cg, node->u.defer.expr);
+                break;
+            case 4:  /* P2: recoverdefer */
+                cg_push_recoverdefer(cg, node->u.defer.expr);
+                break;
+            }
+        }
+        break;
+```
+
+---
+
+## Step 4.10: Tests
 
 ### Test 1: Basic restart with handle
 ```
@@ -548,11 +667,11 @@ fn Main() {
         ok(v) => { Println(v); }    // prints 42 (buf + 0)
         err(e) => { Println(e); }
     }
-    // errdefer did NOT print — P path, not N path
+    // errdefer did NOT print — P2 path, not N1 path
 }
 ```
 
-### Test 3: No handle block → normal error propagation
+### Test 3: No handle block -> normal error propagation
 ```
 extern fn printf(fmt *u8, ...) i32;
 
@@ -569,10 +688,69 @@ fn Compute() Result<i32, i32> { return err(-1); }
 
 fn Main() {
     r := Risky();  // no handle block — restart not invoked
-    // errdefer SHOULD print — N path
+    // errdefer SHOULD print — N1 path
     match r {
         ok(v) => { Println(v); }
         err(e) => { Println(e); }    // prints -1
+    }
+}
+```
+
+### Test 4: recoverdefer fires on recovery
+```
+extern fn printf(fmt *u8, ...) i32;
+
+fn WithRecoverDefer() Result<i32, i32> {
+    recoverdefer printf(CStr("recoverdefer: recovery happened\n"));
+    errdefer printf(CStr("errdefer: THIS SHOULD NOT PRINT\n"));
+
+    val := Compute()
+        restart UseZero() { return ok(0); };
+
+    return ok(val);
+}
+
+fn Compute() Result<i32, i32> { return err(-1); }
+
+fn Main() {
+    r := handle WithRecoverDefer() {
+        on _ => invoke UseZero()
+    };
+    // Output: "recoverdefer: recovery happened"
+    // errdefer did NOT print
+    match r {
+        ok(v) => { Println(v); }    // prints 0
+        err(e) => { Println(e); }
+    }
+}
+```
+
+### Test 5: successdefer fires on P1 and P2, not on N1
+```
+extern fn printf(fmt *u8, ...) i32;
+
+fn WithSuccessDefer() Result<i32, i32> {
+    successdefer printf(CStr("successdefer: success path\n"));
+    errdefer printf(CStr("errdefer: error path\n"));
+
+    val := Compute()
+        restart UseZero() { return ok(0); };
+
+    return ok(val);
+}
+
+fn Compute() Result<i32, i32> { return err(-1); }
+
+fn Main() {
+    // With handle -> recovery -> P2 path
+    r := handle WithSuccessDefer() {
+        on _ => invoke UseZero()
+    };
+    // Output: "successdefer: success path" (P2 >= P1, so successdefer fires)
+    // errdefer did NOT print
+    match r {
+        ok(v) => { Println(v); }
+        err(e) => { Println(e); }
     }
 }
 ```
@@ -584,8 +762,12 @@ fn Main() {
 1. **`restart` keyword and declarations work** — attached to expressions
 2. **`handle` blocks work** — caller specifies recovery policy
 3. **`invoke` dispatches to named restarts** — error matched, restart chosen
-4. **P path is functional** — errdefers don't fire on recovery
-5. **No handle = no recovery** — falls through to N path normally
-6. **Resources preserved on P path** — ownership state maintained
+4. **`successdefer` keyword works** — fires on P1 (success) and P2 (recovery) exits
+5. **`recoverdefer` keyword works** — fires only on P2 (recovery) exits
+6. **P2 path is functional** — errdefers don't fire on recovery
+7. **No handle = no recovery** — falls through to N1 path normally
+8. **Resources preserved on P path** — ownership state maintained
 
-The ternary system is complete: N (errdefer), Z (defer), P (recovery-defer + restarts). All three trit values active.
+The pentit system is complete: N2 (panicdefer), N1 (errdefer), Z (defer), P1 (successdefer), P2 (recoverdefer + restarts). All five pentit values active.
+
+**The composability principle in action:** Most code uses only `defer` + `errdefer` (bool level). Add `recoverdefer` for trit level. Add `panicdefer` + `successdefer` for pentit level. The developer picks the resolution that fits.
