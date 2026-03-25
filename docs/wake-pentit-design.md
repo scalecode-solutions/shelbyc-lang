@@ -8,7 +8,7 @@
 
 ## The Core Insight
 
-A wake's outcome is a pentit. The same truth table that governs defer cleanup governs nursery/supervisor decisions. One system, one firing rule, applied at both the function level and the concurrency level.
+A wake's outcome is a pentit. The same truth table that governs defer cleanup governs crew/supervisor decisions. One system, one firing rule, applied at both the function level and the concurrency level.
 
 ```
 N2 — wake panicked        (unrecoverable: OOM, stack overflow, abort)
@@ -29,7 +29,7 @@ The same way the error system offers bool/trit/pentit resolution for defer clean
 Most code only needs to know: did the wakes finish, or are they still running. Fire-and-forget with a sync point.
 
 ```shelbyc
-nursery {
+crew {
     wake Fetch("url1", &data);
     wake Fetch("url2", &data);
 }
@@ -37,20 +37,20 @@ nursery {
 // No error handling. No restart. Just "wait for all."
 ```
 
-The nursery collapses pentit to bool: **running (Z)** or **done (not Z)**. The developer doesn't check outcomes, doesn't handle errors, doesn't supervise. Two states.
+The crew collapses pentit to bool: **running (Z)** or **done (not Z)**. The developer doesn't check outcomes, doesn't handle errors, doesn't supervise. Two states.
 
 ### Trit level (3 outcomes) — "did it succeed, fail, or recover?"
 
 When you care about errors but don't need to distinguish panic from normal errors, or success from recovery.
 
 ```shelbyc
-nursery {
+crew {
     wake Fetch("url1", &data);
     wake Fetch("url2", &data);
 }
-// Trit outcomes from the nursery's perspective:
+// Trit outcomes from the crew's perspective:
 //   N — at least one wake failed (N2 or N1 collapsed to N)
-//   Z — still running (shouldn't happen after nursery exits)
+//   Z — still running (shouldn't happen after crew exits)
 //   P — all wakes succeeded (P1 or P2 collapsed to P)
 
 errdefer Println("some fetch failed");     // fires on N
@@ -58,14 +58,14 @@ successdefer Println("all fetches ok");     // fires on P
 defer Println("fetches attempted");         // fires always
 ```
 
-The nursery collapses pentit to trit: **failed (N)**, **running (Z)**, **succeeded (P)**. Three states. Errdefer and successdefer handle the N and P cases.
+The crew collapses pentit to trit: **failed (N)**, **running (Z)**, **succeeded (P)**. Three states. Errdefer and successdefer handle the N and P cases.
 
 ### Pentit level (5 outcomes) — full resolution
 
 When you need to distinguish panic from error, success from recovery, and handle each differently.
 
 ```shelbyc
-nursery {
+crew {
     wake ProcessTransaction(tx1);
     wake ProcessTransaction(tx2);
 }
@@ -85,10 +85,10 @@ recoverdefer LogRecovery();         // P2 only
 
 ### The Resolution Tree
 
-Each branch point uses the type that matches its cardinality. A nursery's outcome can feed into another nursery's decision, at any resolution level.
+Each branch point uses the type that matches its cardinality. A crew's outcome can feed into another crew's decision, at any resolution level.
 
 ```
-            nursery exit (pentit)
+            crew exit (pentit)
                     │
          ┌──────┬──┴──┬──────┬──────┐
          N2     N1    Z     P1     P2
@@ -116,46 +116,46 @@ Each branch point uses the type that matches its cardinality. A nursery's outcom
     ...  ...      ...  ...
 ```
 
-Each node picks the resolution that fits. The nursery produces pentit. The errdefer handler might only need trit (error/normal/recovered). The retry logic inside might just need bool (retry or give up). They compose downward. A pentit decision can branch into trits, which can branch into bools. Or a pentit can branch directly into another pentit. The tree is heterogeneous — each node uses the type that matches its branching factor.
+Each node picks the resolution that fits. The crew produces pentit. The errdefer handler might only need trit (error/normal/recovered). The retry logic inside might just need bool (retry or give up). They compose downward. A pentit decision can branch into trits, which can branch into bools. Or a pentit can branch directly into another pentit. The tree is heterogeneous — each node uses the type that matches its branching factor.
 
 ---
 
 ## The Three Constructs
 
-### 1. `nursery { }` — Structured concurrency scope
+### 1. `crew { }` — Structured concurrency scope
 
-All wakes spawned inside a nursery are tracked. The nursery doesn't exit until every wake finishes (or is cancelled). This is the structured concurrency guarantee: no orphan wakes, no dangling references to stack variables.
+All wakes spawned inside a crew are tracked. The crew doesn't exit until every wake finishes (or is cancelled). This is the structured concurrency guarantee: no orphan wakes, no dangling references to stack variables.
 
 ```shelbyc
 fn Main() {
     data := Vec<i32>.New();
 
-    nursery {
+    crew {
         wake Fetch("url1", &data);
         wake Fetch("url2", &data);
         wake Fetch("url3", &data);
     }
     // ALL three wakes finished (or failed) before we get here.
-    // &data references are guaranteed valid for the lifetime of the nursery.
+    // &data references are guaranteed valid for the lifetime of the crew.
     Println("fetched {data.Len()} items");
 }
 ```
 
-**Nursery semantics:**
-- Wakes spawned inside are children of the nursery
-- Nursery blocks until all children reach a terminal state (N2, N1, P1, or P2)
-- If any child hits N1 or N2, the nursery can cancel remaining children
-- The nursery's own exit path is the "worst" pentit of its children
+**Crew semantics:**
+- Wakes spawned inside are children of the crew
+- Crew blocks until all children reach a terminal state (N2, N1, P1, or P2)
+- If any child hits N1 or N2, the crew can cancel remaining children
+- The crew's own exit path is the "worst" pentit of its children
 
-**Nursery exit path computation:**
+**Crew exit path computation:**
 ```
-nursery_exit = min(child_exit for each child)
+crew_exit = min(child_exit for each child)
 ```
-If all children are P1 (success), nursery exits P1. If any child is N1 (error), nursery exits N1. If any child is N2 (panic), nursery exits N2. The min() on pentit raw encoding gives the most severe outcome.
+If all children are P1 (success), crew exits P1. If any child is N1 (error), crew exits N1. If any child is N2 (panic), crew exits N2. The min() on pentit raw encoding gives the most severe outcome.
 
 ### 2. `supervisor { }` — Restart failed wakes
 
-A supervisor wraps a nursery (or a single wake) and provides restart policies. When a child fails (N1 or N2), the supervisor can restart it instead of propagating the failure.
+A supervisor wraps a crew (or a single wake) and provides restart policies. When a child fails (N1 or N2), the supervisor can restart it instead of propagating the failure.
 
 ```shelbyc
 fn Main() {
@@ -169,7 +169,7 @@ fn Main() {
 ```
 
 **Supervisor semantics:**
-- Wraps a nursery with restart policy
+- Wraps a crew with restart policy
 - On child N1: restart the child (P2 path for the child)
 - On child N2: depends on policy (restart or propagate)
 - Tracks restart count per child
@@ -177,7 +177,7 @@ fn Main() {
 
 ### 3. `wake` with pentit outcome — The outcome channel
 
-Every wake spawned in a nursery has an implicit "outcome" that the nursery observes. The wake doesn't need to do anything special — its return type determines the outcome:
+Every wake spawned in a crew has an implicit "outcome" that the crew observes. The wake doesn't need to do anything special — its return type determines the outcome:
 
 ```shelbyc
 // Void return → P1 on normal exit, N2 on panic
@@ -233,22 +233,22 @@ fn FallibleWorker() Result<i32, str> {
 ### New AST Nodes
 
 ```c
-ND_NURSERY,      /* nursery { wake ...; wake ...; } */
+ND_CREW,      /* crew { wake ...; wake ...; } */
 ND_SUPERVISOR,   /* supervisor(opts) { wake ...; } */
 ```
 
 ### New union members in ast.h
 
 ```c
-/* ND_NURSERY: structured concurrency scope */
+/* ND_CREW: structured concurrency scope */
 struct {
     AstNode *body;           /* block containing wake statements */
     AstNode *cancel_policy;  /* optional: cancel on first error? */
-} nursery;
+} crew;
 
 /* ND_SUPERVISOR: restart policy wrapper */
 struct {
-    AstNode *body;           /* block (usually containing a nursery) */
+    AstNode *body;           /* block (usually containing a crew) */
     int      max_restarts;   /* -1 = unlimited */
 } supervisor;
 ```
@@ -262,8 +262,8 @@ typedef struct {
     void    *error_value;  /* non-NULL for N1 (the error data) */
 } WakeOutcome;
 
-/* Nursery — tracks a group of wakes */
-typedef struct ScNursery {
+/* Crew — tracks a group of wakes */
+typedef struct ScCrew {
     ScW           **children;      /* array of child wakes */
     WakeOutcome    *outcomes;      /* outcome per child */
     int             child_count;
@@ -272,13 +272,13 @@ typedef struct ScNursery {
     pthread_mutex_t mu;
     pthread_cond_t  done_cond;     /* signaled when a child finishes */
     bool            cancel_on_error;  /* cancel remaining on first N1/N2? */
-    int8_t          nursery_exit;  /* worst exit path seen */
-} ScNursery;
+    int8_t          crew_exit;  /* worst exit path seen */
+} ScCrew;
 ```
 
 ### __sc_wake_exit Integration
 
-When a wake exits, it reports its outcome to the nursery:
+When a wake exits, it reports its outcome to the crew:
 
 ```c
 /* In runtime_sched.c — called by __sc_context_entry when fn() returns */
@@ -294,9 +294,9 @@ void __sc_wake_exit(void) {
         exit_path = is_ok ? 3 : 1;  /* P1 or N1 */
     }
 
-    /* Report to nursery if we're in one */
-    if (gp->nursery) {
-        ScNursery *n = gp->nursery;
+    /* Report to crew if we're in one */
+    if (gp->crew) {
+        ScCrew *n = gp->crew;
         pthread_mutex_lock(&n->mu);
 
         /* Find our slot and record outcome */
@@ -306,9 +306,9 @@ void __sc_wake_exit(void) {
                 n->outcomes[i].error_value = (exit_path == 1) ?
                     (void *)((char *)gp->fn_result_ptr + sizeof(bool)) : NULL;
 
-                /* Update nursery's worst exit */
-                if (exit_path < n->nursery_exit)
-                    n->nursery_exit = exit_path;
+                /* Update crew's worst exit */
+                if (exit_path < n->crew_exit)
+                    n->crew_exit = exit_path;
 
                 n->completed++;
                 break;
@@ -326,7 +326,7 @@ void __sc_wake_exit(void) {
             }
         }
 
-        /* Signal nursery that a child finished */
+        /* Signal crew that a child finished */
         pthread_cond_signal(&n->done_cond);
         pthread_mutex_unlock(&n->mu);
     }
@@ -338,66 +338,66 @@ void __sc_wake_exit(void) {
 }
 ```
 
-### __sc_nursery_wait — The nursery blocks until all children finish
+### __sc_crew_wait — The crew blocks until all children finish
 
 ```c
-/* Called by the nursery's parent wake. Blocks until all children
- * have a terminal exit path (not Z). Returns the nursery's exit path. */
-int8_t __sc_nursery_wait(ScNursery *n) {
+/* Called by the crew's parent wake. Blocks until all children
+ * have a terminal exit path (not Z). Returns the crew's exit path. */
+int8_t __sc_crew_wait(ScCrew *n) {
     pthread_mutex_lock(&n->mu);
     while (n->completed < n->child_count) {
         pthread_cond_wait(&n->done_cond, &n->mu);
     }
-    int8_t result = n->nursery_exit;
+    int8_t result = n->crew_exit;
     pthread_mutex_unlock(&n->mu);
     return result;
 }
 ```
 
-### Nursery Codegen
+### Crew Codegen
 
-The `nursery { ... }` block generates:
+The `crew { ... }` block generates:
 
 ```c
-/* Codegen for ND_NURSERY */
-case ND_NURSERY: {
-    /* 1. Allocate and initialize ScNursery */
-    LLVMValueRef nursery = call __sc_nursery_new(cancel_on_error);
+/* Codegen for ND_CREW */
+case ND_CREW: {
+    /* 1. Allocate and initialize ScCrew */
+    LLVMValueRef crew = call __sc_crew_new(cancel_on_error);
 
-    /* 2. Set nursery as current nursery in codegen context */
-    cg->current_nursery = nursery;
+    /* 2. Set crew as current crew in codegen context */
+    cg->current_crew = crew;
 
     /* 3. Emit the body — wake statements inside will register
-     *    children with the nursery */
-    cg_expr(cg, node->u.nursery.body);
+     *    children with the crew */
+    cg_expr(cg, node->u.crew.body);
 
     /* 4. Wait for all children */
-    LLVMValueRef exit_path = call __sc_nursery_wait(nursery);
+    LLVMValueRef exit_path = call __sc_crew_wait(crew);
 
     /* 5. Run cleanup based on exit path */
     cg_emit_all_scope_cleanup_pentit(cg, exit_path);
 
-    /* 6. Destroy nursery */
-    call __sc_nursery_destroy(nursery);
+    /* 6. Destroy crew */
+    call __sc_crew_destroy(crew);
 
-    cg->current_nursery = saved_nursery;
+    cg->current_crew = saved_crew;
     break;
 }
 ```
 
-### Wake Spawn Inside Nursery
+### Wake Spawn Inside Crew
 
-When `wake Fn(args)` is inside a nursery, the spawn registers the new wake as a child:
+When `wake Fn(args)` is inside a crew, the spawn registers the new wake as a child:
 
 ```c
-/* Modified __sc_wake_spawn for nursery-aware spawning */
+/* Modified __sc_wake_spawn for crew-aware spawning */
 void __sc_wake_spawn(void (*fn)(void *), void *arg) {
     /* ... existing spawn code ... */
 
-    /* If there's a current nursery, register this wake as a child */
-    ScNursery *n = sc_m->curw->nursery_scope;  /* set by nursery codegen */
+    /* If there's a current crew, register this wake as a child */
+    ScCrew *n = sc_m->curw->crew_scope;  /* set by crew codegen */
     if (n) {
-        gp->nursery = n;
+        gp->crew = n;
         pthread_mutex_lock(&n->mu);
         if (n->child_count >= n->child_cap) {
             n->child_cap = n->child_cap < 16 ? 16 : n->child_cap * 2;
@@ -418,7 +418,7 @@ void __sc_wake_spawn(void (*fn)(void *), void *arg) {
 
 ## Supervisor as Handle/Restart at the Wake Level
 
-The supervisor IS handle/restart. The handle block wraps the nursery. The restart is "spawn the wake again."
+The supervisor IS handle/restart. The handle block wraps the crew. The restart is "spawn the wake again."
 
 ```shelbyc
 fn ProcessJob(job Job) Result<Output, Error> {
@@ -429,9 +429,9 @@ fn ProcessJob(job Job) Result<Output, Error> {
 fn Main() {
     jobs := GetJobs();
 
-    nursery {
+    crew {
         for j in jobs {
-            // Each wake runs inside the nursery.
+            // Each wake runs inside the crew.
             // If it fails, the supervisor restarts it.
             wake handle ProcessJob(j) {
                 on _ => invoke Retry
@@ -440,7 +440,7 @@ fn Main() {
         }
     }
     // All jobs completed (some may have been retried).
-    // Nursery exit path: P1 if all succeeded, P2 if any were retried,
+    // Crew exit path: P1 if all succeeded, P2 if any were retried,
     // N1 if any failed after max retries.
 }
 ```
@@ -451,7 +451,7 @@ The `handle`/`restart` mechanism we already built works here. The `__sc_restart_
 
 ## Defer Integration
 
-The nursery exit path flows directly into the defer system:
+The crew exit path flows directly into the defer system:
 
 ```shelbyc
 fn Pipeline() {
@@ -459,14 +459,14 @@ fn Pipeline() {
     errdefer Println("pipeline had errors");   // fires if any wake failed
     successdefer Println("all wakes ok");      // fires if all succeeded
 
-    nursery {
+    crew {
         wake StepA();
         wake StepB();
         wake StepC();
     }
-    // nursery_exit feeds into cg_emit_all_scope_cleanup_pentit
-    // If nursery_exit == P1: successdefer fires, errdefer skips
-    // If nursery_exit == N1: errdefer fires, successdefer skips
+    // crew_exit feeds into cg_emit_all_scope_cleanup_pentit
+    // If crew_exit == P1: successdefer fires, errdefer skips
+    // If crew_exit == N1: errdefer fires, successdefer skips
     // defer fires always
 }
 ```
@@ -477,43 +477,43 @@ The pentit truth table we built for function-level cleanup applies unchanged at 
 
 ## The Multi-Channel Deadlock Fix
 
-The current scheduler deadlocks because parked M's aren't woken when work becomes available. The nursery design reveals why: without structured concurrency, there's no way to know that 100 collectors are all waiting and 100,000 workers have all sent. The scheduler just sees parked wakes and idle M's.
+The current scheduler deadlocks because parked M's aren't woken when work becomes available. The crew design reveals why: without structured concurrency, there's no way to know that 100 collectors are all waiting and 100,000 workers have all sent. The scheduler just sees parked wakes and idle M's.
 
 The fixes are:
 
-### 1. Nursery-aware scheduling
+### 1. Crew-aware scheduling
 
-When a nursery is active, the scheduler knows exactly how many wakes are outstanding and can prioritize them:
+When a crew is active, the scheduler knows exactly how many wakes are outstanding and can prioritize them:
 
 ```c
-/* In findrunnable — if we're in a nursery, prioritize nursery children */
-if (mp->curw && mp->curw->nursery) {
-    ScNursery *n = mp->curw->nursery;
-    /* Check if any nursery children are runnable on our queue */
-    /* This prevents non-nursery work from starving nursery completion */
+/* In findrunnable — if we're in a crew, prioritize crew children */
+if (mp->curw && mp->curw->crew) {
+    ScCrew *n = mp->curw->crew;
+    /* Check if any crew children are runnable on our queue */
+    /* This prevents non-crew work from starving crew completion */
 }
 ```
 
 ### 2. Bounded concurrency in nurseries
 
 ```shelbyc
-nursery(max_concurrent: 10) {
+crew(max_concurrent: 10) {
     for i := 0; i < 100000; i++ {
         wake Worker(i, ch);  // only 10 run at a time
     }
 }
 ```
 
-This prevents spawning 100,000 simultaneous wakes. Instead, the nursery maintains a semaphore — when 10 are running, new spawns block until a slot opens. This solves the stack exhaustion AND the scheduling starvation.
+This prevents spawning 100,000 simultaneous wakes. Instead, the crew maintains a semaphore — when 10 are running, new spawns block until a slot opens. This solves the stack exhaustion AND the scheduling starvation.
 
 ### 3. Work-group aware scheduling
 
-Wakes in the same nursery form a work group. The scheduler can batch schedule them — when one wake in a group parks, immediately switch to another wake in the same group rather than doing a full `findrunnable` scan.
+Wakes in the same crew form a work group. The scheduler can batch schedule them — when one wake in a group parks, immediately switch to another wake in the same group rather than doing a full `findrunnable` scan.
 
 ```c
 /* In execute — after a wake parks, check if siblings are runnable */
-if (gp->nursery) {
-    ScNursery *n = gp->nursery;
+if (gp->crew) {
+    ScCrew *n = gp->crew;
     for (int i = 0; i < n->child_count; i++) {
         if (atomic_load(&n->children[i]->status) == W_RUNNABLE) {
             /* Found a sibling — run it immediately */
@@ -530,14 +530,14 @@ if (gp->nursery) {
 
 | Phase | What | Files | Tests |
 |-------|------|-------|-------|
-| 1 | `ScNursery` struct + `__sc_nursery_new/wait/destroy` runtime functions | runtime_sched.h, runtime_sched.c | Unit: nursery lifecycle |
+| 1 | `ScCrew` struct + `__sc_crew_new/wait/destroy` runtime functions | runtime_sched.h, runtime_sched.c | Unit: crew lifecycle |
 | 2 | `WakeOutcome` reporting in `__sc_wake_exit` | runtime_sched.c | Unit: wake outcome pentit |
-| 3 | `nursery { }` keyword, parser, AST node | token.h, lexer.c, ast.h, parser.c | Parse test |
-| 4 | Nursery codegen — spawn registration, wait, exit path | cg_stmt.c, cg_literal.c | Gate: basic nursery |
-| 5 | Nursery exit path → defer cleanup integration | cg_stmt.c | Gate: nursery + errdefer |
-| 6 | Cancel on error policy | runtime_sched.c | Gate: nursery cancel |
-| 7 | `max_concurrent` bounded spawning | runtime_sched.c | Gate: bounded nursery |
-| 8 | Supervisor as handle/restart on nursery | parser.c, cg_literal.c | Gate: supervised wake |
+| 3 | `crew { }` keyword, parser, AST node | token.h, lexer.c, ast.h, parser.c | Parse test |
+| 4 | Crew codegen — spawn registration, wait, exit path | cg_stmt.c, cg_literal.c | Gate: basic crew |
+| 5 | Crew exit path → defer cleanup integration | cg_stmt.c | Gate: crew + errdefer |
+| 6 | Cancel on error policy | runtime_sched.c | Gate: crew cancel |
+| 7 | `max_concurrent` bounded spawning | runtime_sched.c | Gate: bounded crew |
+| 8 | Supervisor as handle/restart on crew | parser.c, cg_literal.c | Gate: supervised wake |
 | 9 | Work-group scheduling optimization | runtime_sched.c | Stress: multi-channel |
 | 10 | Fix the multi-channel deadlock | runtime_sched.c | 100k multi-channel test |
 
@@ -545,16 +545,16 @@ if (gp->nursery) {
 
 ## What This Solves
 
-1. **No orphan wakes** — nursery guarantees all children finish before scope exits
-2. **Stack reference safety** — borrows to stack variables are valid for nursery lifetime
+1. **No orphan wakes** — crew guarantees all children finish before scope exits
+2. **Stack reference safety** — borrows to stack variables are valid for crew lifetime
 3. **Structured error propagation** — worst-child pentit flows into defer system
-4. **Automatic cleanup** — errdefer at nursery level handles wake failures
+4. **Automatic cleanup** — errdefer at crew level handles wake failures
 5. **Bounded concurrency** — max_concurrent prevents resource exhaustion
 6. **Restart policies** — supervisor reuses handle/restart mechanism
 7. **Multi-channel deadlock** — work-group scheduling prevents starvation
 8. **Composability** — same pentit truth table, same defer keywords, same firing rule
 
-Everything builds off everything else. The pentit wake outcome feeds the defer truth table. The nursery uses the handle/restart mechanism. The supervisor IS conditions/restarts at the concurrency level. Bit, trit, pentit — the developer picks the resolution that fits.
+Everything builds off everything else. The pentit wake outcome feeds the defer truth table. The crew uses the handle/restart mechanism. The supervisor IS conditions/restarts at the concurrency level. Bit, trit, pentit — the developer picks the resolution that fits.
 
 ---
 
