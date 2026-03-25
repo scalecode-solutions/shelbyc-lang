@@ -20,6 +20,106 @@ P2 — wake recovered       (supervisor restarted it after failure)
 
 ---
 
+## Three Resolutions — The Developer Picks What Fits
+
+The same way the error system offers bool/trit/pentit resolution for defer cleanup, the concurrency system offers bool/trit/pentit resolution for wake observation. Nothing replaces anything. Everything composes.
+
+### Bool level (2 outcomes) — "did it finish?"
+
+Most code only needs to know: did the wakes finish, or are they still running. Fire-and-forget with a sync point.
+
+```shelbyc
+nursery {
+    wake Fetch("url1", &data);
+    wake Fetch("url2", &data);
+}
+// Done. Either they finished or we wouldn't be here.
+// No error handling. No restart. Just "wait for all."
+```
+
+The nursery collapses pentit to bool: **running (Z)** or **done (not Z)**. The developer doesn't check outcomes, doesn't handle errors, doesn't supervise. Two states.
+
+### Trit level (3 outcomes) — "did it succeed, fail, or recover?"
+
+When you care about errors but don't need to distinguish panic from normal errors, or success from recovery.
+
+```shelbyc
+nursery {
+    wake Fetch("url1", &data);
+    wake Fetch("url2", &data);
+}
+// Trit outcomes from the nursery's perspective:
+//   N — at least one wake failed (N2 or N1 collapsed to N)
+//   Z — still running (shouldn't happen after nursery exits)
+//   P — all wakes succeeded (P1 or P2 collapsed to P)
+
+errdefer Println("some fetch failed");     // fires on N
+successdefer Println("all fetches ok");     // fires on P
+defer Println("fetches attempted");         // fires always
+```
+
+The nursery collapses pentit to trit: **failed (N)**, **running (Z)**, **succeeded (P)**. Three states. Errdefer and successdefer handle the N and P cases.
+
+### Pentit level (5 outcomes) — full resolution
+
+When you need to distinguish panic from error, success from recovery, and handle each differently.
+
+```shelbyc
+nursery {
+    wake ProcessTransaction(tx1);
+    wake ProcessTransaction(tx2);
+}
+// Pentit outcomes — the full picture:
+//   N2 — a wake panicked (corrupted state, need emergency cleanup)
+//   N1 — a wake returned err (transaction failed, need rollback)
+//   Z  — still running
+//   P1 — all wakes returned ok (transactions committed)
+//   P2 — a wake was restarted by supervisor and eventually succeeded
+
+panicdefer  EmergencyShutdown();    // N2 only
+errdefer    RollbackAll();          // N1 and N2
+defer       LogCompletion();        // always
+successdefer CommitAll();           // P1 and P2
+recoverdefer LogRecovery();         // P2 only
+```
+
+### The Resolution Tree
+
+Each branch point uses the type that matches its cardinality. A nursery's outcome can feed into another nursery's decision, at any resolution level.
+
+```
+            nursery exit (pentit)
+                    │
+         ┌──────┬──┴──┬──────┬──────┐
+         N2     N1    Z     P1     P2
+         │      │           │      │
+         │      └─────┐     └──┐   │
+         │            │        │   │
+         ▼            ▼        ▼   ▼
+    panicdefer   errdefer  successdefer  recoverdefer
+                                │
+                    ┌───────────┴───────────┐
+                    │                       │
+              trit decision           bool decision
+              (retry? skip?           (log? don't?)
+               escalate?)
+                    │
+         ┌─────────┼─────────┐
+         N         Z         P
+         │                   │
+    pentit decision    pentit decision
+    (which error?      (which success
+     classify it)       path to take)
+         │
+    ┌────┼────┐────┐────┐
+    N2   N1   Z   P1   P2
+    ...  ...      ...  ...
+```
+
+Each node picks the resolution that fits. The nursery produces pentit. The errdefer handler might only need trit (error/normal/recovered). The retry logic inside might just need bool (retry or give up). They compose downward. A pentit decision can branch into trits, which can branch into bools. Or a pentit can branch directly into another pentit. The tree is heterogeneous — each node uses the type that matches its branching factor.
+
+---
+
 ## The Three Constructs
 
 ### 1. `nursery { }` — Structured concurrency scope
